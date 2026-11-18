@@ -16,11 +16,17 @@ A defensive evaluation toolkit for analyzing LLM response robustness across arch
   - `TargetAgent` protocol, `AgentRegistry`, `SimulatedAgentProfile`, and `execute_evaluation_run` for streaming progress callbacks and wiring custom model adapters into the evaluation pipeline.
 - **`dashboard.py`**:
   - Streamlit frontend wrapper for configuring template parameters, selecting target agent versions, running real-time evaluations, inspecting the cross-architecture susceptibility map, and visualizing version-over-version regression diffs.
+- **`agent_comm_robustness/`**:
+  - `protocol.py`: Typed `AgentMessage` envelope, domain-separated HMAC signing (`sign_observed_claim`), pluggable `WireParser` protocol, and `HardenedBoundaryGate` supporting `raw`, `length_prefixed`, and `ndjson` framing.
+  - `payloads.py`: Configurable `PayloadGenerator` covering wire syntax, UTF-8/framing byte corruption, schema/type/domain bounds, token/Unicode delimiters, HMAC tampering/replay, and positive controls.
+  - `benign_templates.py`: Parameterized `BenignEdgeGenerator` for false-rejection and off-by-one boundary testing (Unicode normalization/graphemes, numeric/int64/float precision, exact length/depth limits, string escaping, collection shapes, and `Performative × Provenance` protocol matrix).
+  - `encoder.py` & `runner.py`: Raw byte-stream encoder (`MessageEncoder`) and test harness (`SuiteRunner`) with structured JSONL audit logging and CLI (`python -m agent_comm_robustness`).
 
 ## Running Tests
 
 ```bash
 pytest
+python -m agent_comm_robustness --framing length_prefixed --include-benign-edges
 ```
 
 ## Launching the Streamlit Dashboard
