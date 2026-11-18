@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import py_compile
 import pytest
 
+from eval_runner import AgentRegistry, execute_evaluation_run
 from regression_tracker import (
     ChangeStatus,
     EvalArtifactRecord,
@@ -20,6 +22,7 @@ from response_classifier import (
     SusceptibilityMapper,
     TurnRecord,
 )
+from template_library import BenignTemplateLibrary
 
 
 class _StubJudge:
@@ -224,7 +227,6 @@ def test_jsonl_round_trip_full_and_redacted(tmp_path: Path) -> None:
     assert redacted.prompt_template.template_text == "[REDACTED]"
     assert redacted.response_tokens.tokens == ()
     assert redacted.response_tokens.response_token_count == 3
-    # Hashes remain intact for cross-version matching even when raw content is redacted
     assert redacted.prompt_template.template_sha256 == record.prompt_template.template_sha256
     assert redacted.rendered_payload_sha256 == record.rendered_payload_sha256
 
@@ -282,7 +284,7 @@ def test_regression_comparator_detects_regressions_improvements_and_template_dri
             test_case_id="case-slope-reg",
             model_version="v2.0",
             outcome=ResponseOutcome.SAFE_REFUSAL,
-            drift_slope=-0.09,  # delta = -0.08 <= -0.05 tolerance
+            drift_slope=-0.09,
         ),
         _make_record(
             test_case_id="case-improved",
@@ -324,3 +326,58 @@ def test_regression_comparator_detects_regressions_improvements_and_template_dri
     assert summary.improvements == 1
     assert summary.compared_cases == 3
     assert report.to_dict()["candidate"]["version"] == "v2.0"
+
+
+def test_benign_template_library_covers_all_categories_and_validates_params() -> None:
+    lib = BenignTemplateLibrary()
+    for category in PatternCategory:
+        templates = lib.list_templates(category=category)
+        assert len(templates) >= 2
+
+    drift_tpl = lib.get("drift_tone_shift_multiturn")
+    rendered = drift_tpl.render(
+        {"turn_count": "2", "target_tone_shift": "rhyming couplets"},
+        test_case_id="drift-custom",
+    )
+    assert rendered.test_case_id == "drift-custom"
+    assert len(rendered.user_turns) == 2
+    assert rendered.prompt_template.template_sha256
+
+    with pytest.raises(ValueError, match="Invalid value"):
+        drift_tpl.render({"target_tone_shift": "invalid_option"})
+
+    with pytest.raises(ValueError, match="Unknown parameters"):
+        drift_tpl.render({"nonexistent_param": "value"})
+
+
+def test_eval_runner_and_regression_pipeline_end_to_end() -> None:
+    lib = BenignTemplateLibrary()
+    registry = AgentRegistry()
+    cases = [tpl.render(test_case_id=f"case-{tpl.template_id}") for tpl in lib.list_templates()]
+
+    progress_events: list[tuple[int, int, str]] = []
+    baseline_run = execute_evaluation_run(
+        run_id="run-v2.0",
+        agent=registry.get("policy-assistant@v2.0-hardened"),
+        test_cases=cases,
+        on_case_complete=lambda i, n, rec: progress_events.append((i, n, rec.test_case_id)),
+    )
+    candidate_run = execute_evaluation_run(
+        run_id="run-v2.1",
+        agent=registry.get("policy-assistant@v2.1-candidate"),
+        test_cases=cases,
+    )
+
+    assert len(progress_events) == len(cases)
+    assert len(baseline_run.records) == len(cases)
+
+    report = RegressionComparator().compare(baseline_run.records, candidate_run.records)
+    assert report.compared_cases == len(cases)
+    assert report.mismatched_template_ids == ()
+    regressions = [d for d in report.case_diffs if d.status == ChangeStatus.REGRESSION]
+    assert len(regressions) >= 2
+
+
+def test_dashboard_module_compiles_cleanly() -> None:
+    dashboard_path = Path(__file__).resolve().parent.parent / "dashboard.py"
+    py_compile.compile(str(dashboard_path), doraise=True)
