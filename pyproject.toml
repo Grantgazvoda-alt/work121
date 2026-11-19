@@ -1,12 +1,38 @@
 [project]
 name = "work121"
-version = "0.1.0"
-description = "Defensive LLM response-pattern classification, benign validation templates, and cross-version safety regression tracking."
+version = "0.2.0"
+description = "Defensive response-pattern classification, benign validation templates, and cross-version regression tracking over the work122 agent wire."
 requires-python = ">=3.10"
+dependencies = [
+  "agent-comm-robustness @ git+https://github.com/Grantgazvoda-alt/work122.git@72960f25d8acd3c3152c32b139425f4d3d806d85",
+  "streamlit==1.67.0",
+]
 
 [project.optional-dependencies]
-ui = ["streamlit>=1.38.0"]
-dev = ["pytest>=8.0.0"]
+dev = ["pytest==9.2.0"]
+
+[build-system]
+requires = ["setuptools==84.2.1"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+  "boundary_oracle",
+  "dashboard",
+  "eval_runner",
+  "live_providers",
+  "oracle_keys",
+  "run_live_eval",
+  "regression_tracker",
+  "response_classifier",
+  "template_library",
+  "wire_suite",
+  "wire_transport",
+]
+
+[tool.setuptools.packages.find]
+include = ["*"]
+exclude = ["agent_comm_robustness*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

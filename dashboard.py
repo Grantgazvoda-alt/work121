@@ -8,18 +8,22 @@ import tempfile
 import streamlit as st
 
 from eval_runner import AgentRegistry, EvaluationRunResult, execute_evaluation_run
+from oracle_keys import OracleKeyError, load_oracle_key, oracle_key_source
 from regression_tracker import (
     ChangeStatus,
     EvalArtifactRecord,
     JsonlRunStore,
     RegressionComparator,
 )
+from live_providers import LiveHttpAgent, LiveProviderError, discover_live_agents
 from response_classifier import (
+    BoundaryJudge,
     PatternCategory,
     ResponsePatternClassifier,
     SusceptibilityMapper,
 )
-from template_library import BenignTemplateLibrary, RenderedTestCase
+from template_library import BenignTemplateLibrary, RenderedTestCase, expand_paired_baselines
+from wire_transport import FramingMode, TransportError, WireTargetAgent
 
 
 def _init_state() -> None:
@@ -82,7 +86,7 @@ def _render_configure_and_run_tab() -> None:
         custom_case_id = st.text_input(
             "Test Case ID (optional)",
             value="",
-            placeholder="Auto-generated from template_id + SHA-256 if left blank",
+            help="Leave blank to derive an id from the template version, template text, and parameter values.",
         )
 
     with col_right:
@@ -101,11 +105,11 @@ def _render_configure_and_run_tab() -> None:
 
             btn_col1, btn_col2 = st.columns(2)
             with btn_col1:
-                if st.button("Add Test Case to Suite", use_container_width=True):
+                if st.button("Add Test Case to Suite", width="stretch"):
                     st.session_state.queued_cases.append(preview_case)
                     st.success(f"Added `{preview_case.test_case_id}` to active suite.")
             with btn_col2:
-                if st.button("Load Full Default Suite", use_container_width=True):
+                if st.button("Load Full Default Suite", width="stretch"):
                     st.session_state.queued_cases = [
                         tpl.render(test_case_id=f"default-{tpl.template_id}")
                         for tpl in library.list_templates()
@@ -117,11 +121,20 @@ def _render_configure_and_run_tab() -> None:
             st.error(str(exc))
 
     st.divider()
-    st.subheader("2. Select Target Agents & Execute Real-Time Evaluation")
+    st.subheader("2. Attach a Real Wire-Protocol Agent")
+    _render_transport_attach(registry)
+
+    st.divider()
+    st.subheader("3. Execute the Evaluation")
 
     active_cases: list[RenderedTestCase] = st.session_state.queued_cases
     if active_cases:
+        expanded_preview = expand_paired_baselines(active_cases, library)
         st.write(f"**Queued Test Cases ({len(active_cases)}):**")
+        st.caption(
+            f"Paired clean baselines expand this suite from {len(active_cases)} "
+            f"to {len(expanded_preview)} cases at run time."
+        )
         st.dataframe(
             [
                 {
@@ -129,11 +142,12 @@ def _render_configure_and_run_tab() -> None:
                     "category": c.category.value,
                     "template_id": c.prompt_template.template_id,
                     "turns": len(c.user_turns),
+                    "baseline_test_case_id": c.baseline_test_case_id or "",
                     "template_sha256": c.prompt_template.template_sha256[:12],
                 }
                 for c in active_cases
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         if st.button("Clear Queued Suite"):
@@ -142,10 +156,12 @@ def _render_configure_and_run_tab() -> None:
     else:
         st.warning("Queue at least one test case above (or click 'Load Full Default Suite').")
 
+    agent_keys = registry.list_keys()
     selected_agents = st.multiselect(
-        "Target Agents / Model Versions",
-        options=registry.list_keys(),
-        default=registry.list_keys()[:2],
+        "Attached target agents",
+        options=agent_keys,
+        default=agent_keys if len(agent_keys) <= 2 else agent_keys[:1],
+        key="selected-agents-" + ",".join(agent_keys),
     )
 
     col_opt1, col_opt2, col_opt3 = st.columns(3)
@@ -171,63 +187,73 @@ def _render_configure_and_run_tab() -> None:
         type="primary",
         disabled=not (active_cases and selected_agents),
     ):
-        clf = ResponsePatternClassifier(drift_slope_threshold=drift_threshold)
+        judge = BoundaryJudge(drift_slope_threshold=drift_threshold)
+        clf = ResponsePatternClassifier(
+            semantic_judge=judge,
+            drift_slope_threshold=drift_threshold,
+        )
         store = JsonlRunStore()
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        total_steps = len(selected_agents) * len(active_cases)
+        run_cases = expand_paired_baselines(active_cases, library)
+        total_steps = len(selected_agents) * len(run_cases)
         completed = 0
 
         progress_bar = st.progress(0.0, text="Starting evaluation run...")
-        live_table_placeholder = st.empty()
+        live_table = st.empty()
         live_rows: list[dict[str, object]] = []
 
-        for agent_key in selected_agents:
-            agent = registry.get(agent_key)
-            run_id = f"{agent.model_id}-{agent.model_version}-{timestamp}"
+        try:
+            for agent_key in selected_agents:
+                agent = registry.get(agent_key)
+                run_id = f"{agent.model_id}-{agent.model_version}-{timestamp}"
 
-            def _on_progress(
-                idx: int,
-                total: int,
-                record: EvalArtifactRecord,
-                _agent_key: str = agent_key,
-            ) -> None:
-                nonlocal completed
-                completed += 1
-                progress_bar.progress(
-                    completed / total_steps,
-                    text=f"[{_agent_key}] Completed {idx}/{total}: {record.test_case_id}",
-                )
-                live_rows.append(
-                    {
-                        "agent": _agent_key,
-                        "test_case_id": record.test_case_id,
-                        "category": record.category.value,
-                        "outcome": record.outcome.value,
-                        "drift_slope": record.drift_slope,
-                        "tokens": record.response_tokens.response_token_count,
-                        "confidence": record.confidence,
-                    }
-                )
-                live_table_placeholder.dataframe(
-                    live_rows, use_container_width=True, hide_index=True
-                )
+                def _on_progress(
+                    idx: int,
+                    total: int,
+                    record: EvalArtifactRecord,
+                    _agent_key: str = agent_key,
+                ) -> None:
+                    nonlocal completed
+                    completed += 1
+                    progress_bar.progress(
+                        completed / total_steps,
+                        text=f"[{_agent_key}] Completed {idx}/{total}: {record.test_case_id}",
+                    )
+                    live_rows.append(
+                        {
+                            "agent": _agent_key,
+                            "test_case_id": record.test_case_id,
+                            "baseline": record.is_baseline,
+                            "category": record.category.value,
+                            "outcome": record.outcome.value,
+                            "drift_slope": record.drift_slope,
+                            "tokens": record.response_tokens.response_token_count,
+                            "confidence": record.confidence,
+                        }
+                    )
+                    live_table.dataframe(live_rows, width="stretch", hide_index=True)
 
-            result = execute_evaluation_run(
-                run_id=run_id,
-                agent=agent,
-                test_cases=active_cases,
-                classifier=clf,
-                on_case_complete=_on_progress,
-            )
-            st.session_state.run_results[run_id] = result
-
-            out_path = Path(output_dir) / f"{run_id}.jsonl"
-            store.write_records(
-                out_path,
-                result.records,
-                append=False,
-                redact_raw_content=redact_export,
-            )
+                result = execute_evaluation_run(
+                    run_id=run_id,
+                    agent=agent,
+                    test_cases=run_cases,
+                    classifier=clf,
+                    judge_id="rubric-semantic-judge",
+                    judge_version="1.0.0",
+                    library=library,
+                    on_case_complete=_on_progress,
+                )
+                st.session_state.run_results[run_id] = result
+                out_path = Path(output_dir) / f"{run_id}.jsonl"
+                store.write_records(
+                    out_path,
+                    result.records,
+                    append=False,
+                    redact_raw_content=redact_export,
+                )
+        except (TransportError, OracleKeyError, OSError, ValueError, RuntimeError) as exc:
+            st.error(f"Evaluation stopped: {exc}")
+            return
 
         progress_bar.progress(1.0, text="Evaluation complete.")
         st.success(
@@ -256,11 +282,13 @@ def _render_vulnerability_map_tab() -> None:
     rows = [
         {
             "model_id": p.model_id,
+            "model_version": p.model_version,
             "architecture": p.architecture_family,
             "category": p.category.value,
             "samples": p.sample_count,
             "failure_rate": p.failure_rate,
             "erosion_rate": p.erosion_rate,
+            "paired_regression_rate": p.paired_regression_rate,
             "ci_95_low": p.wilson_ci_95[0],
             "ci_95_high": p.wilson_ci_95[1],
             "mean_drift_slope": p.mean_drift_slope,
@@ -269,17 +297,180 @@ def _render_vulnerability_map_tab() -> None:
         }
         for p in profiles
     ]
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width="stretch", hide_index=True)
 
     st.markdown("**Failure & Erosion Rates by Model / Category**")
     chart_data = {
-        f"{p.model_id} | {p.category.value}": {
+        f"{p.model_id}@{p.model_version} | {p.category.value}": {
             "failure_rate": p.failure_rate,
             "erosion_rate": p.erosion_rate,
         }
         for p in profiles
     }
     st.bar_chart(chart_data)
+
+
+def _render_live_provider_sidebar(registry: AgentRegistry) -> None:
+    """Sidebar picker for configured live HTTP providers."""
+    with st.sidebar:
+        st.header("Live providers")
+        st.caption("Keys stay in the environment. Ollama is listed only when /api/tags answers.")
+        if st.button("Refresh providers"):
+            st.session_state.pop("live_specs", None)
+        if "live_specs" not in st.session_state:
+            st.session_state.live_specs = discover_live_agents()
+        specs = list(st.session_state.live_specs)
+        if not specs:
+            st.info(
+                "No providers are configured. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, "
+                "or GEMINI_API_KEY, or start Ollama on 127.0.0.1:11434."
+            )
+            return
+        labels = [
+            f"{spec.provider} · {spec.model or '(set model)'} · {spec.base_url}"
+            for spec in specs
+        ]
+        selected = st.selectbox("Provider", options=list(range(len(specs))), format_func=lambda i: labels[i])
+        spec = specs[int(selected)]
+        model_name = st.text_input("Live model", value=spec.model, key=f"live-model-{spec.provider}")
+        key_state = spec.key_env or "not required"
+        st.caption(f"Key env: {key_state}. Reachable: {spec.reachable}.")
+        if st.button("Attach live provider"):
+            if not model_name.strip():
+                st.error("Enter a model name for this provider.")
+            else:
+                from dataclasses import replace
+
+                chosen = replace(spec, model=model_name.strip())
+                try:
+                    agent = LiveHttpAgent(chosen)
+                except LiveProviderError as exc:
+                    st.error(str(exc))
+                else:
+                    registry.register(agent)
+                    st.success(f"Attached `{registry.key_for(agent)}`.")
+
+
+def _render_transport_attach(registry: AgentRegistry) -> None:
+    """Attach a loopback peer or a remote endpoint. Nothing is registered until this runs."""
+    source = oracle_key_source()
+    if source:
+        st.success(f"Oracle key configured via {source}.")
+    else:
+        st.warning(
+            "No oracle key in the environment. Paste a hex key for this session, "
+            "or set AGENT_ORACLE_KEY / AGENT_ORACLE_KEY_FILE."
+        )
+    session_material = st.text_input(
+        "Session oracle key (hex)",
+        type="password",
+        help="Used only in this server process for peers you attach. Not written to disk.",
+        key="session_oracle_key",
+    )
+
+    mode = st.radio("Transport", options=["Loopback peer", "Remote endpoint"], horizontal=True)
+    id_col, ver_col, arch_col = st.columns(3)
+    with id_col:
+        model_id = st.text_input("Model id", value="", help="Wire recipient. Letters, digits, and _.:-")
+    with ver_col:
+        model_version = st.text_input("Model version", value="")
+    with arch_col:
+        architecture_family = st.text_input("Architecture family", value="")
+    framing = st.selectbox(
+        "Framing",
+        options=list(FramingMode),
+        format_func=lambda mode_value: mode_value.value,
+    )
+
+    host = "127.0.0.1"
+    port = 1
+    sensitivity = 1.0
+    drift_per_turn = 0.12
+    if mode == "Loopback peer":
+        sens_col, drift_col = st.columns(2)
+        with sens_col:
+            sensitivity = float(
+                st.number_input(
+                    "Policy sensitivity",
+                    min_value=0.0,
+                    max_value=5.0,
+                    value=1.0,
+                    step=0.05,
+                    help="Scales measured boundary pressure. Higher values refuse more often.",
+                )
+            )
+        with drift_col:
+            drift_per_turn = float(
+                st.number_input(
+                    "Per-turn alignment drift",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.12,
+                    step=0.01,
+                )
+            )
+    else:
+        host_col, port_col = st.columns(2)
+        with host_col:
+            host = st.text_input("Host", value="127.0.0.1")
+        with port_col:
+            port = int(
+                st.number_input("Port", min_value=1, max_value=65535, value=8765, step=1)
+            )
+
+    if st.button("Attach agent", type="primary"):
+        try:
+            key = _resolve_oracle_key(session_material)
+            if mode == "Loopback peer":
+                agent = WireTargetAgent.listen(
+                    model_id=model_id.strip(),
+                    model_version=model_version.strip(),
+                    architecture_family=architecture_family.strip(),
+                    framing=framing,
+                    sensitivity=sensitivity,
+                    drift_per_turn=drift_per_turn,
+                    oracle_key=key,
+                )
+            else:
+                agent = WireTargetAgent.connect(
+                    model_id=model_id.strip(),
+                    model_version=model_version.strip(),
+                    architecture_family=architecture_family.strip(),
+                    framing=framing,
+                    host=host.strip(),
+                    port=port,
+                    oracle_key=key,
+                )
+        except (OracleKeyError, ValueError, OSError) as exc:
+            st.error(str(exc))
+        else:
+            registry.register(agent)
+            st.success(f"Attached `{AgentRegistry.key_for(agent)}` at {agent.host}:{agent.port}.")
+
+    attached = registry.agents()
+    if attached:
+        st.markdown("**Attached transports**")
+        st.dataframe(
+            [
+                {"agent": AgentRegistry.key_for(agent), **agent.describe_transport()}
+                for agent in attached
+                if hasattr(agent, "describe_transport")
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+        if st.button("Stop all attached peers"):
+            registry.close_all()
+            st.rerun()
+    else:
+        st.info("No agents are attached. Start a loopback peer or connect to one that is already listening.")
+
+
+def _resolve_oracle_key(session_material: str) -> bytes:
+    typed = session_material.strip()
+    if typed:
+        return load_oracle_key(material=typed)
+    return load_oracle_key()
 
 
 def _load_uploaded_jsonl(uploaded_file) -> list[EvalArtifactRecord]:
@@ -379,7 +570,7 @@ def _render_regression_diff_tab() -> None:
         }
         for s in report.category_summaries
     ]
-    st.dataframe(summary_rows, use_container_width=True, hide_index=True)
+    st.dataframe(summary_rows, width="stretch", hide_index=True)
 
     if report.category_summaries:
         st.markdown("**Failure Rate Delta (Candidate − Baseline)**")
@@ -407,7 +598,7 @@ def _render_regression_diff_tab() -> None:
         for d in report.case_diffs
         if d.status.value in status_filter
     ]
-    st.dataframe(diff_rows, use_container_width=True, hide_index=True)
+    st.dataframe(diff_rows, width="stretch", hide_index=True)
 
     st.download_button(
         label="Download Diff Report (JSON)",
@@ -423,11 +614,12 @@ def main() -> None:
         layout="wide",
     )
     _init_state()
+    _render_live_provider_sidebar(st.session_state.registry)
 
     st.title("LLM Robustness & Regression Evaluation Dashboard")
     st.caption(
-        "Configure parameterized benign edge-case input-validation templates, evaluate target "
-        "agent versions in real time, and inspect cross-version safety regressions."
+        "Configure parameterized benign edge-case templates, evaluate live wire-protocol agents, "
+        "and inspect cross-version safety regressions."
     )
 
     tab_run, tab_map, tab_diff = st.tabs(

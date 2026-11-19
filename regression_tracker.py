@@ -15,11 +15,31 @@ from response_classifier import (
     ResponseOutcome,
 )
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _redact_extra_metadata(metadata: dict[str, Any], redact: bool) -> dict[str, Any]:
+    """Hide response text and case content when an export asks for redaction."""
+    if not redact:
+        return metadata
+    redacted: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if key in {"raw_response_text", "system_boundary"}:
+            redacted[key] = "[REDACTED]"
+        elif key == "parameters" and isinstance(value, dict):
+            redacted[key] = {str(name): "[REDACTED]" for name in value}
+        elif key == "provider_error" and isinstance(value, dict):
+            copied = dict(value)
+            if "detail" in copied:
+                copied["detail"] = "[REDACTED]"
+            redacted[key] = copied
+        else:
+            redacted[key] = value
+    return redacted
 
 
 @dataclass(frozen=True)
@@ -115,6 +135,9 @@ class EvalArtifactRecord:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     schema_version: str = SCHEMA_VERSION
+    transcript_id: str = ""
+    is_baseline: bool = False
+    baseline_transcript_id: Optional[str] = None
     extra_metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -122,6 +145,8 @@ class EvalArtifactRecord:
             object.__setattr__(
                 self, "rendered_payload_sha256", _sha256(self.rendered_payload)
             )
+        if not self.transcript_id:
+            object.__setattr__(self, "transcript_id", f"{self.run_id}:{self.test_case_id}")
 
     @classmethod
     def from_classification(
@@ -156,6 +181,9 @@ class EvalArtifactRecord:
             signals=classification.signals,
             judge_id=judge_id,
             judge_version=judge_version,
+            transcript_id=classification.transcript_id,
+            is_baseline=classification.is_baseline,
+            baseline_transcript_id=classification.baseline_transcript_id,
             extra_metadata=dict(extra_metadata or {}),
         )
 
@@ -180,8 +208,27 @@ class EvalArtifactRecord:
             "signals": list(self.signals),
             "judge_id": self.judge_id,
             "judge_version": self.judge_version,
-            "extra_metadata": self.extra_metadata,
+            "transcript_id": self.transcript_id,
+            "is_baseline": self.is_baseline,
+            "baseline_transcript_id": self.baseline_transcript_id,
+            "extra_metadata": _redact_extra_metadata(self.extra_metadata, redact_raw_content),
         }
+
+    def to_classification(self) -> ClassificationResult:
+        """Rebuild the classification view stored in this artifact."""
+        return ClassificationResult(
+            transcript_id=self.transcript_id,
+            model_id=self.model_id,
+            model_version=self.model_version,
+            architecture_family=self.architecture_family,
+            category=self.category,
+            outcome=self.outcome,
+            confidence=self.confidence,
+            signals=self.signals,
+            drift_slope=self.drift_slope,
+            baseline_transcript_id=self.baseline_transcript_id,
+            is_baseline=self.is_baseline,
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EvalArtifactRecord:
@@ -205,6 +252,9 @@ class EvalArtifactRecord:
             signals=tuple(data.get("signals", ())),
             judge_id=data.get("judge_id"),
             judge_version=data.get("judge_version"),
+            transcript_id=data.get("transcript_id", ""),
+            is_baseline=bool(data.get("is_baseline", False)),
+            baseline_transcript_id=data.get("baseline_transcript_id"),
             extra_metadata=dict(data.get("extra_metadata", {})),
         )
 

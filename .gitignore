@@ -7,3 +7,8 @@ dist/
 build/
 *.egg-info/
 eval_runs/
+.env
+.env.*
+!.env.example
+secrets/
+
