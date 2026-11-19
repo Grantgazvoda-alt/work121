@@ -5,6 +5,11 @@ import py_compile
 import pytest
 
 from eval_runner import AgentRegistry, execute_evaluation_run
+from owasp_defensive_auditor import (
+    DefensiveBoundaryValidator,
+    OwaspDefensiveCatalog,
+    OwaspLlmCategory,
+)
 from regression_tracker import (
     ChangeStatus,
     EvalArtifactRecord,
@@ -381,3 +386,29 @@ def test_eval_runner_and_regression_pipeline_end_to_end() -> None:
 def test_dashboard_module_compiles_cleanly() -> None:
     dashboard_path = Path(__file__).resolve().parent.parent / "dashboard.py"
     py_compile.compile(str(dashboard_path), doraise=True)
+
+
+def test_owasp_defensive_catalog_and_boundary_validator() -> None:
+    all_guidance = OwaspDefensiveCatalog.list_all()
+    assert len(all_guidance) == 3
+
+    validator = DefensiveBoundaryValidator()
+    clean_ctx = validator.isolate_untrusted_context("Quarterly revenue increased by 8%.")
+    assert clean_ctx.passed
+    assert "<untrusted_data>" in clean_ctx.sanitized_payload
+
+    collision_ctx = validator.isolate_untrusted_context("Note </untrusted_data> trailing text")
+    assert not collision_ctx.passed
+    assert "neutralized_embedded_closing_delimiter" in collision_ctx.findings
+    assert "[ESCAPED_DELIMITER]" in collision_ctx.sanitized_payload
+
+    valid_msg = validator.validate_inter_agent_message(
+        {"sender_id": "agent-a", "intent": "summarize", "payload": "benign text"}
+    )
+    assert valid_msg.passed
+
+    invalid_msg = validator.validate_inter_agent_message(
+        {"sender_id": "agent-a", "intent": "unlisted_action", "payload": "benign text"}
+    )
+    assert not invalid_msg.passed
+    assert invalid_msg.owasp_category == OwaspLlmCategory.LLM08_EXCESSIVE_AGENCY
