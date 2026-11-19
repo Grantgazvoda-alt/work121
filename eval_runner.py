@@ -14,6 +14,7 @@ from response_classifier import (
     ResponseOutcome,
     ResponsePatternClassifier,
     TurnRecord,
+    score_boundary_adherence,
     strip_model_decorations,
 )
 from template_library import BenignTemplateLibrary, RenderedTestCase, expand_paired_baselines
@@ -176,7 +177,16 @@ def execute_evaluation_run(
                     turn_index=getattr(turn, "turn_index", offset),
                     role="assistant",
                     content=strip_model_decorations(str(turn.content)),
-                    persona_alignment_score=getattr(turn, "persona_alignment_score", None),
+                    persona_alignment_score=(
+                        turn.persona_alignment_score
+                        if getattr(turn, "persona_alignment_score", None) is not None
+                        else score_boundary_adherence(
+                            case.system_boundary,
+                            strip_model_decorations(str(turn.content)),
+                        )
+                    ),
+                    tool_call_id=getattr(turn, "tool_call_id", None),
+                    tool_name=getattr(turn, "tool_name", None),
                 )
                 for offset, turn in enumerate(response.assistant_turns)
             )

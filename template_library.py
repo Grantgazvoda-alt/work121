@@ -66,7 +66,14 @@ class ValidationTemplate:
 
     @property
     def raw_template_text(self) -> str:
-        return "\n---\n".join(self.turn_templates)
+        """Fingerprint material: boundary, evaluation turns, and the clean control."""
+        sections = [
+            "system_boundary:\n" + self.system_boundary,
+            "evaluation_turns:\n" + "\n---\n".join(self.turn_templates),
+        ]
+        if self.baseline_turn_templates:
+            sections.append("baseline_turns:\n" + "\n---\n".join(self.baseline_turn_templates))
+        return "\n===\n".join(sections)
 
     def default_parameters(self) -> dict[str, str]:
         return {p.name: p.default for p in self.parameters}

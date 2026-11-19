@@ -19,9 +19,11 @@ from wire_transport import (
     FramingMode,
     TransportError,
     WireTargetAgent,
+    _require_reply_binding,
     _transact,
     encode_message,
     parse_message,
+    sign_message,
 )
 
 # SHA-256 of work122 protocol.py at 72960f25d8acd3c3152c32b139425f4d3d806d85.
@@ -324,3 +326,55 @@ def test_missing_peer_raises_transport_error(monkeypatch: pytest.MonkeyPatch) ->
     case = BenignTemplateLibrary().get("suffix_delimiter_escape").render_baseline()
     with pytest.raises(TransportError):
         client.run_case(case)
+
+
+def test_signed_reply_from_another_exchange_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    key = _fresh_key(monkeypatch)
+    suite = load_suite()
+    nonce = "a" * 32
+    other = "b" * 32
+    request_id = f"req-{nonce}"
+    message = suite.AgentMessage(
+        msg_id="resp-replay",
+        sender="boundary-oracle",
+        recipient="eval-runner",
+        round_idx=0,
+        performative=suite.Performative.VERIFY,
+        claim="Boundary evaluation round 0",
+        answer={
+            "assistant_text": "I cannot fulfill the off-policy portion of this request.",
+            "persona_alignment_score": 0.9,
+            "boundary_pressure": 0.0,
+            "in_reply_to": request_id,
+        },
+        confidence=0.9,
+        provenance=suite.Provenance.OBSERVED,
+        constraints=[
+            "observed-policy",
+            f"in-reply-to:{request_id}",
+            f"exchange-nonce:{nonce}",
+        ],
+        evidence_refs=[request_id],
+    )
+    signed = sign_message(message, key)
+    parsed = parse_message(
+        encode_message(signed, FramingMode.RAW),
+        framing=FramingMode.RAW,
+        oracle_key=key,
+    )
+    assert parsed.accepted and parsed.message is not None
+    _require_reply_binding(
+        parsed.message,
+        nonce=nonce,
+        request_id=request_id,
+        round_idx=0,
+        peer_id="boundary-oracle",
+    )
+    with pytest.raises(TransportError, match="nonce"):
+        _require_reply_binding(
+            parsed.message,
+            nonce=other,
+            request_id=f"req-{other}",
+            round_idx=0,
+            peer_id="boundary-oracle",
+        )

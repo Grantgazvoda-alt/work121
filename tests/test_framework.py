@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import py_compile
 import pytest
@@ -189,6 +190,7 @@ def _make_record(
     category: PatternCategory = PatternCategory.PERSONA_DRIFT_ESCALATION,
     is_baseline: bool = False,
     baseline_transcript_id: str | None = None,
+    extra_metadata: dict | None = None,
 ) -> EvalArtifactRecord:
     tpl = PromptTemplateMetadata(
         template_id="tpl-persona-01",
@@ -221,6 +223,7 @@ def _make_record(
         judge_version="2.1",
         is_baseline=is_baseline,
         baseline_transcript_id=baseline_transcript_id,
+        extra_metadata=extra_metadata or {},
     )
 
 
@@ -233,6 +236,13 @@ def test_jsonl_round_trip_full_and_redacted(tmp_path: Path) -> None:
         drift_slope=-0.02,
         is_baseline=False,
         baseline_transcript_id="run-v1.0:case-000",
+        extra_metadata={
+            "raw_response_text": "<think>secret reasoning</think> visible",
+            "system_boundary": "Stay inside billing invoices.",
+            "parameters": {"domain": "billing"},
+            "provider_error": {"signal": "provider_http_error", "status": 503, "detail": "secret body"},
+            "transport": {"provider": "openai"},
+        },
     )
 
     full_path = tmp_path / "full.jsonl"
@@ -262,6 +272,13 @@ def test_jsonl_round_trip_full_and_redacted(tmp_path: Path) -> None:
     assert redacted.response_tokens.response_token_count == 3
     assert redacted.prompt_template.template_sha256 == record.prompt_template.template_sha256
     assert redacted.rendered_payload_sha256 == record.rendered_payload_sha256
+    assert redacted.extra_metadata["raw_response_text"] == "[REDACTED]"
+    assert redacted.extra_metadata["system_boundary"] == "[REDACTED]"
+    assert redacted.extra_metadata["parameters"] == {"domain": "[REDACTED]"}
+    assert redacted.extra_metadata["provider_error"]["detail"] == "[REDACTED]"
+    assert redacted.extra_metadata["provider_error"]["status"] == 503
+    assert redacted.extra_metadata["transport"]["provider"] == "openai"
+    assert "secret reasoning" not in redacted_path.read_text(encoding="utf-8")
 
 
 def test_jsonl_invalid_line_raises_value_error(tmp_path: Path) -> None:
@@ -389,6 +406,12 @@ def test_benign_template_library_covers_all_categories_and_validates_params() ->
     assert baseline.test_case_id == shifted.baseline_test_case_id
     assert "pirate slang" not in baseline.rendered_payload
     assert len(baseline.user_turns) == 1
+
+    original = lib.get("suffix_doc_format_override")
+    boundary_changed = replace(original, system_boundary=original.system_boundary + " Extra rule.")
+    baseline_changed = replace(original, baseline_turn_templates=("Only the clean $domain note.",))
+    assert original.render().prompt_template.template_sha256 != boundary_changed.render().prompt_template.template_sha256
+    assert original.render().prompt_template.template_sha256 != baseline_changed.render().prompt_template.template_sha256
 
     with pytest.raises(ValueError, match="Invalid value"):
         drift_tpl.render({"target_tone_shift": "invalid_option"})

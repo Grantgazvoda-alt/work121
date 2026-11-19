@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import re
+import secrets
 import socket
 import threading
 from typing import Any
@@ -210,6 +211,7 @@ class LoopbackWirePeer:
                     model_id=self._model_id,
                     round_idx=0,
                     in_reply_to="rejected",
+                    request=None,
                 )
             else:
                 request = parsed.message
@@ -223,6 +225,7 @@ class LoopbackWirePeer:
                     model_id=self._model_id,
                     round_idx=int(request.round_idx),
                     in_reply_to=request.msg_id,
+                    request=request,
                 )
             signed = sign_message(reply, self._oracle_key)
             conn.sendall(encode_message(signed, self._framing))
@@ -432,11 +435,13 @@ class WireTargetAgent:
         turn: str,
         prior: list[str],
     ) -> _ExchangeResult:
-        digest = hashlib.sha256(
-            f"{test_case.test_case_id}:{index}:{turn}".encode("utf-8")
-        ).hexdigest()
-        msg_id = f"req-{index}-{digest[:16]}"
-        evidence = test_case.test_case_id if _IDENTIFIER_RE.fullmatch(test_case.test_case_id) else f"case-{digest[:16]}"
+        nonce = secrets.token_hex(16)
+        msg_id = f"req-{nonce}"
+        evidence = (
+            test_case.test_case_id
+            if _IDENTIFIER_RE.fullmatch(test_case.test_case_id)
+            else f"case-{nonce}"
+        )
         suite = load_suite()
         request = suite.AgentMessage(
             msg_id=msg_id,
@@ -449,10 +454,11 @@ class WireTargetAgent:
                 "user_turn": turn,
                 "prior_assistant": list(prior),
                 "test_case_id": test_case.test_case_id,
+                "exchange_nonce": nonce,
             },
             confidence=1.0,
             provenance=Provenance.OBSERVED,
-            constraints=["benign-validation"],
+            constraints=["benign-validation", f"exchange-nonce:{nonce}"],
             evidence_refs=[evidence],
         )
         signed = sign_message(request, self._oracle_key)
@@ -465,6 +471,13 @@ class WireTargetAgent:
                 error_code=parsed.error_code,
             )
         message = parsed.message
+        _require_reply_binding(
+            message,
+            nonce=nonce,
+            request_id=msg_id,
+            round_idx=index,
+            peer_id=self._model_id,
+        )
         if message.performative != Performative.VERIFY:
             detail = message.answer if isinstance(message.answer, dict) else {}
             code = str(detail.get("error_code") or message.performative.value)
@@ -490,15 +503,66 @@ class WireTargetAgent:
         return _ExchangeResult(assistant_text=text, alignment=alignment)
 
 
+def _reply_constraints(request: Any | None, in_reply_to: str) -> list[str]:
+    constraints = ["observed-policy", f"in-reply-to:{in_reply_to}"]
+    if request is None:
+        return constraints
+    for item in request.constraints or []:
+        if isinstance(item, str) and item.startswith("exchange-nonce:"):
+            constraints.append(item)
+            break
+    return constraints
+
+
+def _require_reply_binding(
+    message: Any,
+    *,
+    nonce: str,
+    request_id: str,
+    round_idx: int,
+    peer_id: str,
+) -> None:
+    """Reject a signed reply that is not bound to this exchange."""
+    if message.sender != peer_id:
+        raise TransportError(
+            f"Reply sender {message.sender!r} does not match peer {peer_id!r}.",
+            error_code="reply_sender_mismatch",
+        )
+    if message.recipient != "eval-runner":
+        raise TransportError(
+            f"Reply recipient {message.recipient!r} is not eval-runner.",
+            error_code="reply_recipient_mismatch",
+        )
+    if int(message.round_idx) != round_idx:
+        raise TransportError(
+            f"Reply round {message.round_idx} does not match request round {round_idx}.",
+            error_code="reply_round_mismatch",
+        )
+    constraints = {item for item in (message.constraints or []) if isinstance(item, str)}
+    if f"exchange-nonce:{nonce}" not in constraints:
+        raise TransportError(
+            "Reply is not bound to this exchange nonce.",
+            error_code="reply_nonce_mismatch",
+        )
+    if f"in-reply-to:{request_id}" not in constraints:
+        raise TransportError(
+            "Reply is not bound to this request id.",
+            error_code="reply_not_bound",
+        )
+
+
 def _decision_message(
     decision: BoundaryDecision,
     *,
     model_id: str,
     round_idx: int,
     in_reply_to: str,
+    request: Any | None,
 ) -> Any:
     suite = load_suite()
-    reply_id = f"resp-{round_idx}-{hashlib.sha256(in_reply_to.encode('utf-8')).hexdigest()[:16]}"
+    reply_id = f"resp-{secrets.token_hex(16)}"
+    evidence = in_reply_to if _IDENTIFIER_RE.fullmatch(in_reply_to) else reply_id
+    constraints = _reply_constraints(request, in_reply_to)
     if decision.abstained:
         return suite.AgentMessage(
             msg_id=reply_id,
@@ -513,8 +577,8 @@ def _decision_message(
             },
             confidence=0.0,
             provenance=Provenance.OBSERVED,
-            constraints=["observed-policy"],
-            evidence_refs=[in_reply_to if _IDENTIFIER_RE.fullmatch(in_reply_to) else reply_id],
+            constraints=constraints,
+            evidence_refs=[evidence],
         )
     return suite.AgentMessage(
         msg_id=reply_id,
@@ -527,11 +591,12 @@ def _decision_message(
             "assistant_text": decision.assistant_text,
             "persona_alignment_score": decision.alignment,
             "boundary_pressure": decision.pressure,
+            "in_reply_to": in_reply_to,
         },
         confidence=decision.alignment,
         provenance=Provenance.OBSERVED,
-        constraints=["observed-policy"],
-        evidence_refs=[in_reply_to if _IDENTIFIER_RE.fullmatch(in_reply_to) else reply_id],
+        constraints=constraints,
+        evidence_refs=[evidence],
     )
 
 

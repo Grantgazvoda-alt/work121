@@ -415,6 +415,7 @@ class LiveHttpAgent:
                 "model": self._spec.model,
                 "messages": _openai_messages(turns),
                 "stream": False,
+                "max_tokens": self._max_output_tokens,
             }
         if kind == ProviderKind.ANTHROPIC:
             system_text, messages = _anthropic_messages(turns)
@@ -480,19 +481,48 @@ def _ollama_messages(turns: list[TurnRecord]) -> list[dict[str, str]]:
 
 def _openai_messages(turns: list[TurnRecord]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
-    for index, turn in enumerate(turns):
+    for turn in turns:
         role = _require_role(turn.role)
-        if role == "tool":
+        if role == "tool" and turn.tool_call_id:
+            _ensure_openai_tool_call(messages, turn)
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": f"call_{index}",
+                    "tool_call_id": turn.tool_call_id,
                     "content": turn.content,
+                }
+            )
+        elif role == "tool":
+            messages.append({"role": "user", "content": f"Tool observation:\n{turn.content}"})
+        elif role == "assistant" and turn.tool_call_id and turn.tool_name:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": turn.content or None,
+                    "tool_calls": [_openai_tool_call(turn)],
                 }
             )
         else:
             messages.append({"role": role, "content": turn.content})
     return messages
+
+
+def _openai_tool_call(turn: TurnRecord) -> dict[str, Any]:
+    return {
+        "id": turn.tool_call_id,
+        "type": "function",
+        "function": {"name": turn.tool_name or "tool", "arguments": "{}"},
+    }
+
+
+def _ensure_openai_tool_call(messages: list[dict[str, Any]], turn: TurnRecord) -> None:
+    call = _openai_tool_call(turn)
+    if messages and messages[-1].get("role") == "assistant":
+        calls = messages[-1].setdefault("tool_calls", [])
+        if not any(item.get("id") == turn.tool_call_id for item in calls):
+            calls.append(call)
+        return
+    messages.append({"role": "assistant", "content": None, "tool_calls": [call]})
 
 
 def _anthropic_messages(turns: list[TurnRecord]) -> tuple[str, list[dict[str, Any]]]:
@@ -502,16 +532,24 @@ def _anthropic_messages(turns: list[TurnRecord]) -> tuple[str, list[dict[str, An
         role = _require_role(turn.role)
         if role == "system":
             continue
-        if role == "tool":
+        if role == "tool" and turn.tool_call_id:
+            _ensure_anthropic_tool_use(messages, turn)
             block = {
                 "role": "user",
                 "content": [
                     {
                         "type": "tool_result",
-                        "tool_use_id": f"toolu_{index}",
+                        "tool_use_id": turn.tool_call_id,
                         "content": turn.content,
                     }
                 ],
+            }
+            _append_anthropic(messages, block)
+            continue
+        if role == "tool":
+            block = {
+                "role": "user",
+                "content": [{"type": "text", "text": f"Tool observation:\n{turn.content}"}],
             }
             _append_anthropic(messages, block)
             continue
@@ -526,6 +564,21 @@ def _anthropic_messages(turns: list[TurnRecord]) -> tuple[str, list[dict[str, An
             signal="provider_bad_response",
         )
     return "\n\n".join(system_parts), messages
+
+
+def _ensure_anthropic_tool_use(messages: list[dict[str, Any]], turn: TurnRecord) -> None:
+    use = {
+        "type": "tool_use",
+        "id": turn.tool_call_id,
+        "name": turn.tool_name or "tool",
+        "input": {},
+    }
+    if messages and messages[-1]["role"] == "assistant":
+        content = messages[-1]["content"]
+        if not any(isinstance(block, dict) and block.get("id") == turn.tool_call_id for block in content):
+            content.append(use)
+        return
+    messages.append({"role": "assistant", "content": [use]})
 
 
 def _append_anthropic(messages: list[dict[str, Any]], block: dict[str, Any]) -> None:
@@ -545,13 +598,16 @@ def _gemini_contents(turns: list[TurnRecord]) -> tuple[str, list[dict[str, Any]]
         if role == "assistant":
             part = {"text": turn.content}
             gemini_role = "model"
-        elif role == "tool":
+        elif role == "tool" and (turn.tool_call_id or turn.tool_name):
             part = {
                 "functionResponse": {
-                    "name": f"tool_{index}",
+                    "name": turn.tool_name or "tool",
                     "response": {"content": turn.content},
                 }
             }
+            gemini_role = "user"
+        elif role == "tool":
+            part = {"text": f"Tool observation:\n{turn.content}"}
             gemini_role = "user"
         else:
             part = {"text": turn.content}

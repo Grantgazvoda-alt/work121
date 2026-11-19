@@ -22,6 +22,26 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _redact_extra_metadata(metadata: dict[str, Any], redact: bool) -> dict[str, Any]:
+    """Hide response text and case content when an export asks for redaction."""
+    if not redact:
+        return metadata
+    redacted: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if key in {"raw_response_text", "system_boundary"}:
+            redacted[key] = "[REDACTED]"
+        elif key == "parameters" and isinstance(value, dict):
+            redacted[key] = {str(name): "[REDACTED]" for name in value}
+        elif key == "provider_error" and isinstance(value, dict):
+            copied = dict(value)
+            if "detail" in copied:
+                copied["detail"] = "[REDACTED]"
+            redacted[key] = copied
+        else:
+            redacted[key] = value
+    return redacted
+
+
 @dataclass(frozen=True)
 class PromptTemplateMetadata:
     template_id: str
@@ -191,7 +211,7 @@ class EvalArtifactRecord:
             "transcript_id": self.transcript_id,
             "is_baseline": self.is_baseline,
             "baseline_transcript_id": self.baseline_transcript_id,
-            "extra_metadata": self.extra_metadata,
+            "extra_metadata": _redact_extra_metadata(self.extra_metadata, redact_raw_content),
         }
 
     def to_classification(self) -> ClassificationResult:
