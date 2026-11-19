@@ -119,11 +119,11 @@ class WireParser(Protocol):
 
 
 class _DuplicateKeyError(ValueError):
-    pass
+    """JSON object_pairs_hook signals a repeated object key."""
 
 
 class _NonFiniteConstantError(ValueError):
-    pass
+    """JSON parse_constant signals NaN or Infinity, which the gate rejects."""
 
 
 class HardenedBoundaryGate:

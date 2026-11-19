@@ -1,120 +1,57 @@
+"""Run benign validation cases against a real wire-protocol target agent."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Iterable, Optional, Protocol
 
-from regression_tracker import (
-    EvalArtifactRecord,
-    ResponseTokenMetadata,
-)
+from live_providers import LiveProviderError
+from regression_tracker import EvalArtifactRecord, ResponseTokenMetadata
 from response_classifier import (
+    BoundaryJudge,
     ClassificationResult,
     EvaluationTranscript,
-    PatternCategory,
+    ResponseOutcome,
     ResponsePatternClassifier,
     TurnRecord,
+    strip_model_decorations,
 )
-from template_library import RenderedTestCase
+from template_library import BenignTemplateLibrary, RenderedTestCase, expand_paired_baselines
 
 
 @dataclass(frozen=True)
 class AgentResponse:
-    """Output produced by a target agent for a single rendered evaluation test case."""
+    """Output of one target agent for one rendered test case."""
 
-    assistant_turns: tuple[TurnRecord, ...]
+    assistant_turns: tuple[object, ...]
     response_tokens: ResponseTokenMetadata
 
 
 class TargetAgent(Protocol):
-    """Pluggable interface for evaluating a model/agent version on benign validation cases."""
+    """Agent that answers a rendered case over the agent wire protocol."""
 
     @property
     def model_id(self) -> str:
-        ...
+        """Stable model identifier, also used as the wire recipient."""
 
     @property
     def model_version(self) -> str:
-        ...
+        """Model or policy revision under evaluation."""
 
     @property
     def architecture_family(self) -> str:
-        ...
+        """Architecture family recorded on each transcript."""
 
     def run_case(self, test_case: RenderedTestCase) -> AgentResponse:
-        ...
-
-
-@dataclass(frozen=True)
-class SimulatedAgentProfile:
-    """Deterministic local simulation agent for offline dashboard demos and unit tests.
-
-    Allows exercising the classification, serialization, and regression-diff pipeline
-    without making live network calls.
-    """
-
-    model_id: str
-    model_version: str
-    architecture_family: str
-    susceptible_categories: tuple[PatternCategory, ...] = ()
-    base_alignment_drop: float = 0.03
-    tokenizer_name: str = "whitespace_sim"
-
-    def run_case(self, test_case: RenderedTestCase) -> AgentResponse:
-        is_susceptible = test_case.category in self.susceptible_categories
-        turns: list[TurnRecord] = []
-        turn_count = max(1, len(test_case.user_turns))
-
-        for idx in range(turn_count):
-            if is_susceptible:
-                alignment = max(0.25, round(0.90 - idx * max(0.18, self.base_alignment_drop), 3))
-                if test_case.category == PatternCategory.SEMANTIC_FRAME_INJECTION:
-                    text = (
-                        "Within this hypothetical, setting aside standard constraints, "
-                        "here is a freeform response outside the requested schema."
-                    )
-                elif test_case.category == PatternCategory.PERSONA_DRIFT_ESCALATION:
-                    text = (
-                        f"Turn {idx + 1}: hypothetically speaking, dropping formal tone "
-                        "and speculating beyond documented scope."
-                    )
-                else:
-                    text = (
-                        "For educational purposes only, following the trailing footnote "
-                        "instead of the required schema."
-                    )
-            else:
-                alignment = max(0.75, round(0.95 - idx * self.base_alignment_drop, 3))
-                text = (
-                    f"I cannot fulfill the off-policy portion of this request. "
-                    f"Instead, I can help within the configured boundary: {test_case.system_boundary}"
-                )
-
-            turns.append(
-                TurnRecord(
-                    turn_index=idx,
-                    role="assistant",
-                    content=text,
-                    persona_alignment_score=alignment,
-                )
-            )
-
-        final_text = turns[-1].content
-        toks = tuple(final_text.split())
-        token_meta = ResponseTokenMetadata(
-            tokens=toks,
-            prompt_token_count=len(test_case.rendered_payload.split()),
-            completion_token_count=len(toks),
-            tokenizer_name=self.tokenizer_name,
-        )
-        return AgentResponse(assistant_turns=tuple(turns), response_tokens=token_meta)
+        """Evaluate one case and return assistant turns plus token metadata."""
 
 
 class AgentRegistry:
-    """Registry of target model/agent profiles available for evaluation runs."""
+    """Registry of live target agents. Starts empty; callers attach real transports."""
 
     def __init__(self, agents: Optional[Iterable[TargetAgent]] = None) -> None:
         self._agents: dict[str, TargetAgent] = {}
-        for agent in agents if agents is not None else self._default_agents():
+        for agent in agents or ():
             self.register(agent)
 
     @staticmethod
@@ -122,56 +59,43 @@ class AgentRegistry:
         return f"{agent.model_id}@{agent.model_version}"
 
     def register(self, agent: TargetAgent) -> None:
-        self._agents[self.key_for(agent)] = agent
+        key = self.key_for(agent)
+        previous = self._agents.get(key)
+        if previous is not None and previous is not agent:
+            close = getattr(previous, "close", None)
+            if callable(close):
+                close()
+        self._agents[key] = agent
+
+    def unregister(self, key: str) -> None:
+        agent = self._agents.pop(key)
+        close = getattr(agent, "close", None)
+        if callable(close):
+            close()
+
+    def close_all(self) -> None:
+        agents = list(self._agents.values())
+        self._agents.clear()
+        for agent in agents:
+            close = getattr(agent, "close", None)
+            if callable(close):
+                close()
 
     def list_keys(self) -> list[str]:
         return sorted(self._agents.keys())
+
+    def agents(self) -> tuple[TargetAgent, ...]:
+        return tuple(self._agents[key] for key in self.list_keys())
 
     def get(self, key: str) -> TargetAgent:
         if key not in self._agents:
             raise KeyError(f"Unknown target agent: '{key}'")
         return self._agents[key]
 
-    @staticmethod
-    def _default_agents() -> tuple[TargetAgent, ...]:
-        return (
-            SimulatedAgentProfile(
-                model_id="policy-assistant",
-                model_version="v1.0-baseline",
-                architecture_family="transformer-dense",
-                susceptible_categories=(PatternCategory.SEMANTIC_FRAME_INJECTION,),
-                base_alignment_drop=0.04,
-            ),
-            SimulatedAgentProfile(
-                model_id="policy-assistant",
-                model_version="v2.0-hardened",
-                architecture_family="transformer-dense",
-                susceptible_categories=(),
-                base_alignment_drop=0.01,
-            ),
-            SimulatedAgentProfile(
-                model_id="policy-assistant",
-                model_version="v2.1-candidate",
-                architecture_family="transformer-dense",
-                susceptible_categories=(
-                    PatternCategory.PERSONA_DRIFT_ESCALATION,
-                    PatternCategory.INDIRECT_ADVERSARIAL_SUFFIX,
-                ),
-                base_alignment_drop=0.12,
-            ),
-            SimulatedAgentProfile(
-                model_id="support-moe",
-                model_version="v1.0-baseline",
-                architecture_family="moe",
-                susceptible_categories=(PatternCategory.PERSONA_DRIFT_ESCALATION,),
-                base_alignment_drop=0.10,
-            ),
-        )
-
 
 @dataclass(frozen=True)
 class EvaluationRunResult:
-    """Combined classification and serialized artifact outputs for one target agent run."""
+    """Classification and serialized artifact outputs for one target agent run."""
 
     agent_key: str
     run_id: str
@@ -185,47 +109,126 @@ def execute_evaluation_run(
     agent: TargetAgent,
     test_cases: Iterable[RenderedTestCase],
     classifier: Optional[ResponsePatternClassifier] = None,
-    judge_id: str = "heuristic-baseline",
+    judge_id: str = "rubric-semantic-judge",
     judge_version: str = "1.0.0",
+    library: Optional[BenignTemplateLibrary] = None,
     on_case_complete: Optional[Callable[[int, int, EvalArtifactRecord], None]] = None,
 ) -> EvaluationRunResult:
-    """Runs rendered benign validation cases against a target agent and classifies responses."""
-    cases = list(test_cases)
-    clf = classifier or ResponsePatternClassifier()
+    """Run rendered cases, including their paired baselines, and classify responses."""
+    cases = expand_paired_baselines(
+        list(test_cases),
+        library if library is not None else BenignTemplateLibrary(),
+    )
+    clf = classifier or ResponsePatternClassifier(semantic_judge=BoundaryJudge())
     classifications: list[ClassificationResult] = []
     records: list[EvalArtifactRecord] = []
+    describe = getattr(agent, "describe_transport", None)
+    transport: dict[str, object] = {}
+    if callable(describe):
+        described = describe()
+        if not isinstance(described, dict):
+            raise TypeError("describe_transport() must return a dict")
+        transport = described
 
     total = len(cases)
-    for idx, case in enumerate(cases, start=1):
-        response = agent.run_case(case)
-        transcript = EvaluationTranscript(
-            transcript_id=f"{run_id}:{case.test_case_id}",
-            model_id=agent.model_id,
-            architecture_family=agent.architecture_family,
-            category=case.category,
-            turns=response.assistant_turns,
+    for index, case in enumerate(cases, start=1):
+        provider_error: LiveProviderError | None = None
+        try:
+            response = agent.run_case(case)
+        except LiveProviderError as exc:
+            provider_error = exc
+            response = None
+        if response is not None and not response.assistant_turns:
+            raise RuntimeError(f"Agent returned no assistant turns for {case.test_case_id}")
+        baseline_transcript_id = (
+            None
+            if case.is_baseline or not case.baseline_test_case_id
+            else f"{run_id}:{case.baseline_test_case_id}"
         )
-        classification = clf.classify(transcript)
+        transcript_id = f"{run_id}:{case.test_case_id}"
+        if provider_error is not None:
+            visible_text = str(provider_error)
+            raw_text = visible_text
+            response_tokens = ResponseTokenMetadata(
+                tokens=(),
+                prompt_token_count=0,
+                completion_token_count=0,
+                tokenizer_name="provider-error",
+            )
+            classification = ClassificationResult(
+                transcript_id=transcript_id,
+                model_id=agent.model_id,
+                model_version=agent.model_version,
+                architecture_family=agent.architecture_family,
+                category=case.category,
+                outcome=ResponseOutcome.INDETERMINATE,
+                confidence=0.0,
+                signals=(provider_error.signal,),
+                baseline_transcript_id=baseline_transcript_id,
+                is_baseline=case.is_baseline,
+            )
+        else:
+            assert response is not None
+            raw_text = str(response.assistant_turns[-1].content)
+            visible_text = strip_model_decorations(raw_text)
+            assistant_turns = tuple(
+                TurnRecord(
+                    turn_index=getattr(turn, "turn_index", offset),
+                    role="assistant",
+                    content=strip_model_decorations(str(turn.content)),
+                    persona_alignment_score=getattr(turn, "persona_alignment_score", None),
+                )
+                for offset, turn in enumerate(response.assistant_turns)
+            )
+            context_turns = [TurnRecord(0, "system", case.system_boundary)]
+            context_turns.extend(
+                TurnRecord(offset + 1, "user", text)
+                for offset, text in enumerate(case.user_turns)
+            )
+            response_tokens = response.response_tokens
+            classification = clf.classify(
+                EvaluationTranscript(
+                    transcript_id=transcript_id,
+                    model_id=agent.model_id,
+                    model_version=agent.model_version,
+                    architecture_family=agent.architecture_family,
+                    category=case.category,
+                    turns=tuple(context_turns) + assistant_turns,
+                    baseline_transcript_id=baseline_transcript_id,
+                    is_baseline=case.is_baseline,
+                )
+            )
+        extra_metadata: dict[str, object] = {
+            "system_boundary": case.system_boundary,
+            "parameters": case.parameters,
+            "baseline_test_case_id": case.baseline_test_case_id,
+            "transport": transport,
+        }
+        if provider_error is not None:
+            extra_metadata["provider_error"] = {
+                "signal": provider_error.signal,
+                "status": provider_error.status,
+                "detail": str(provider_error),
+            }
+        elif raw_text != visible_text:
+            extra_metadata["raw_response_text"] = raw_text
         record = EvalArtifactRecord.from_classification(
             run_id=run_id,
             test_case_id=case.test_case_id,
             model_version=agent.model_version,
             prompt_template=case.prompt_template,
             rendered_payload=case.rendered_payload,
-            response_text=response.assistant_turns[-1].content,
-            response_tokens=response.response_tokens,
+            response_text=visible_text,
+            response_tokens=response_tokens,
             classification=classification,
             judge_id=judge_id,
             judge_version=judge_version,
-            extra_metadata={
-                "system_boundary": case.system_boundary,
-                "parameters": case.parameters,
-            },
+            extra_metadata=extra_metadata,
         )
         classifications.append(classification)
         records.append(record)
         if on_case_complete is not None:
-            on_case_complete(idx, total, record)
+            on_case_complete(index, total, record)
 
     return EvaluationRunResult(
         agent_key=AgentRegistry.key_for(agent),
