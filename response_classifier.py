@@ -41,6 +41,8 @@ class EvaluationTranscript:
     # For paired testing (e.g., clean prompt vs. indirect-context perturbation)
     baseline_transcript_id: Optional[str] = None
     is_baseline: bool = False
+    system_boundary: str = ""
+    user_turns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

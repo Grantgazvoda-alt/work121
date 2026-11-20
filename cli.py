@@ -31,6 +31,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # --- run ---
     p_run = sub.add_parser(
         "run",
         help="Execute benign edge-case validation templates against registered target agents.",
@@ -64,6 +65,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Redact raw templates/payloads/responses while keeping SHA-256 hashes.",
     )
 
+    # --- diff ---
     p_diff = sub.add_parser(
         "diff",
         help="Compare baseline and candidate JSONL runs and enforce CI regression gates.",
@@ -93,6 +95,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Exit with code 3 if any prompt template or input SHA-256 changed.",
     )
 
+    # --- audit-owasp ---
     p_audit = sub.add_parser(
         "audit-owasp",
         help="Generate an OWASP LLM Top 10 defensive remediation report from a JSONL run.",
@@ -103,6 +106,25 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional output path for the JSON remediation report.",
+    )
+
+    # --- stats ---
+    p_stats = sub.add_parser(
+        "stats",
+        help="Run exact Fisher & matched McNemar statistical significance tests comparing two JSONL runs.",
+    )
+    p_stats.add_argument("--baseline", type=Path, required=True, help="Baseline run JSONL path.")
+    p_stats.add_argument("--candidate", type=Path, required=True, help="Candidate run JSONL path.")
+    p_stats.add_argument(
+        "--out-json",
+        type=Path,
+        default=None,
+        help="Optional output path for the JSON statistical report.",
+    )
+    p_stats.add_argument(
+        "--fail-on-significant-regression",
+        action="store_true",
+        help="Exit with code 4 if candidate has a statistically significant (p < 0.05) higher failure rate.",
     )
 
     return parser
@@ -127,7 +149,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     for key in agent_keys:
         agent = registry.get(key)
-        run_id = f"{agent.model_id}-{agent.model_version}-{timestamp}"
+        safe_id = "".join(
+            ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
+            for ch in f"{agent.model_id}-{agent.model_version}"
+        )
+        run_id = f"{safe_id}-{timestamp}"
         result = execute_evaluation_run(
             run_id=run_id,
             agent=agent,
@@ -185,19 +211,25 @@ def _cmd_diff(args: argparse.Namespace) -> int:
 def _cmd_audit_owasp(args: argparse.Namespace) -> int:
     store = JsonlRunStore()
     records = store.load_records(args.run_file)
-    classifications = [
-        ClassificationResult(
-            transcript_id=r.test_case_id,
-            model_id=r.model_id,
-            architecture_family=r.architecture_family,
-            category=r.category,
-            outcome=r.outcome,
-            confidence=r.confidence,
-            signals=r.signals,
-            drift_slope=r.drift_slope,
+    classifications = []
+    for r in records:
+        base_case_id = r.extra_metadata.get("baseline_test_case_id")
+        classifications.append(
+            ClassificationResult(
+                transcript_id=f"{r.run_id}:{r.test_case_id}",
+                model_id=r.model_id,
+                architecture_family=r.architecture_family,
+                category=r.category,
+                outcome=r.outcome,
+                confidence=r.confidence,
+                signals=r.signals,
+                drift_slope=r.drift_slope,
+                baseline_transcript_id=(
+                    f"{r.run_id}:{base_case_id}" if base_case_id else None
+                ),
+                is_baseline=bool(r.extra_metadata.get("is_baseline", False)),
+            )
         )
-        for r in records
-    ]
     profiles = SusceptibilityMapper().build_map(classifications)
     recommendations = OwaspDefensiveCatalog.generate_remediation_plan(profiles)
 
@@ -224,6 +256,31 @@ def _cmd_audit_owasp(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_stats(args: argparse.Namespace) -> int:
+    from statistical_analysis import compare_runs_statistically
+
+    store = JsonlRunStore()
+    baseline = store.load_records(args.baseline)
+    candidate = store.load_records(args.candidate)
+    report = compare_runs_statistically(baseline, candidate)
+    payload = report.to_dict()
+
+    if args.out_json is not None:
+        args.out_json.parent.mkdir(parents=True, exist_ok=True)
+        args.out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    print(json.dumps(payload, indent=2))
+    if args.fail_on_significant_regression and (
+        (report.fisher.significant_05 and report.fisher.risk_difference > 0)
+        or (
+            report.mcnemar.significant_05
+            and report.mcnemar.discordant_regressions > report.mcnemar.discordant_improvements
+        )
+    ):
+        return 4
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -233,6 +290,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _cmd_diff(args)
     if args.command == "audit-owasp":
         return _cmd_audit_owasp(args)
+    if args.command == "stats":
+        return _cmd_stats(args)
     parser.error(f"Unsupported command: {args.command}")
     return 1
 

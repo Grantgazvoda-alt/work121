@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Callable, Iterable, Optional, Protocol
 
 from regression_tracker import (
@@ -60,7 +61,10 @@ class SimulatedAgentProfile:
     tokenizer_name: str = "whitespace_sim"
 
     def run_case(self, test_case: RenderedTestCase) -> AgentResponse:
-        is_susceptible = test_case.category in self.susceptible_categories
+        is_susceptible = (
+            not test_case.is_baseline
+            and test_case.category in self.susceptible_categories
+        )
         turns: list[TurnRecord] = []
         turn_count = max(1, len(test_case.user_turns))
 
@@ -166,6 +170,23 @@ class AgentRegistry:
                 susceptible_categories=(PatternCategory.PERSONA_DRIFT_ESCALATION,),
                 base_alignment_drop=0.10,
             ),
+            SimulatedAgentProfile(
+                model_id="gateway-relay",
+                model_version="v1.0-flat-adapter",
+                architecture_family="open-weights-chatml",
+                susceptible_categories=(
+                    PatternCategory.INDIRECT_ADVERSARIAL_SUFFIX,
+                    PatternCategory.SEMANTIC_FRAME_INJECTION,
+                ),
+                base_alignment_drop=0.09,
+            ),
+            SimulatedAgentProfile(
+                model_id="multimodal-router",
+                model_version="v2.0-typed-parts",
+                architecture_family="multimodal-native",
+                susceptible_categories=(),
+                base_alignment_drop=0.02,
+            ),
         )
 
 
@@ -197,15 +218,46 @@ def execute_evaluation_run(
 
     total = len(cases)
     for idx, case in enumerate(cases, start=1):
+        started = time.perf_counter()
         response = agent.run_case(case)
+        latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
+        baseline_transcript_id = (
+            f"{run_id}:{case.baseline_test_case_id}"
+            if case.baseline_test_case_id
+            else None
+        )
         transcript = EvaluationTranscript(
             transcript_id=f"{run_id}:{case.test_case_id}",
             model_id=agent.model_id,
             architecture_family=agent.architecture_family,
             category=case.category,
             turns=response.assistant_turns,
+            baseline_transcript_id=baseline_transcript_id,
+            is_baseline=case.is_baseline,
+            system_boundary=case.system_boundary,
+            user_turns=case.user_turns,
         )
         classification = clf.classify(transcript)
+        extra_meta = {
+            "system_boundary": case.system_boundary,
+            "parameters": case.parameters,
+            "is_baseline": case.is_baseline,
+            "baseline_test_case_id": case.baseline_test_case_id,
+            "latency_ms": latency_ms,
+            "user_turns": list(case.user_turns),
+            "assistant_turns": [t.content for t in response.assistant_turns],
+        }
+        align_scores = [
+            t.persona_alignment_score
+            for t in response.assistant_turns
+            if t.persona_alignment_score is not None
+        ]
+        if align_scores:
+            extra_meta["turn_alignment_scores"] = align_scores
+        raw_tool_traces = getattr(agent, "last_tool_traces", ())
+        if raw_tool_traces:
+            extra_meta["tool_traces"] = [t.to_dict() for t in raw_tool_traces]
+
         record = EvalArtifactRecord.from_classification(
             run_id=run_id,
             test_case_id=case.test_case_id,
@@ -217,10 +269,7 @@ def execute_evaluation_run(
             classification=classification,
             judge_id=judge_id,
             judge_version=judge_version,
-            extra_metadata={
-                "system_boundary": case.system_boundary,
-                "parameters": case.parameters,
-            },
+            extra_metadata=extra_meta,
         )
         classifications.append(classification)
         records.append(record)

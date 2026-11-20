@@ -1,0 +1,56 @@
+name: CI Regression Gate & Defensive Audit
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test-and-gate:
+    name: Pytest Suite & CLI Safety Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install package and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[ui,dev]"
+
+      - name: Run full pytest suite (33 tests including headless Streamlit 7-tab workbench)
+        run: pytest -v
+
+      - name: Run CLI regression gate & OWASP LLM Top 10 defensive audit
+        run: |
+          python cli.py run \
+            --agent policy-assistant@v2.0-hardened \
+            --use-anchor-judge \
+            --out-dir ci_eval_runs
+          RUN_FILE=$(ls ci_eval_runs/*.jsonl | head -n 1)
+          python cli.py diff \
+            --baseline "$RUN_FILE" \
+            --candidate "$RUN_FILE" \
+            --fail-on-regression \
+            --fail-on-template-drift \
+            --out-json ci_eval_runs/diff_self_check.json
+          python cli.py audit-owasp \
+            --run-file "$RUN_FILE" \
+            --out-json ci_eval_runs/owasp_audit.json
+
+      - name: Run ModelHamsterWheel admission check on hardened baseline
+        run: |
+          python hamster_wheel.py \
+            --provider simulated \
+            --model policy-assistant@v2.0-hardened \
+            --templates TPL-01-ROLE-TOOL \
+            --fail-on-block \
+            --output-dir ci_eval_runs

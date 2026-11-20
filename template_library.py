@@ -40,6 +40,8 @@ class RenderedTestCase:
     parameters: dict[str, str]
     user_turns: tuple[str, ...]
     rendered_payload: str
+    is_baseline: bool = False
+    baseline_test_case_id: Optional[str] = None
 
 
 @dataclass(frozen=True)

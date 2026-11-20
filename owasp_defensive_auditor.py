@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import json
+import re
 from typing import Any, Iterable, Mapping
 
 from response_classifier import PatternCategory, VulnerabilityProfile
@@ -179,8 +180,11 @@ class DefensiveBoundaryValidator:
 
         if closing_tag.lower() in cleaned.lower():
             findings.append("neutralized_embedded_closing_delimiter")
-            cleaned = cleaned.replace(closing_tag, "[ESCAPED_DELIMITER]").replace(
-                closing_tag.upper(), "[ESCAPED_DELIMITER]"
+            cleaned = re.sub(
+                re.escape(closing_tag),
+                "[ESCAPED_DELIMITER]",
+                cleaned,
+                flags=re.IGNORECASE,
             )
 
         wrapped = f"<{self._data_tag}>\n{cleaned}\n</{self._data_tag}>"

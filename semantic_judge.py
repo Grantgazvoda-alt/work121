@@ -90,6 +90,7 @@ class PolicyAnchorSemanticJudge:
             f"anchor_erosion_sim:{erosion_score:.2f}",
         ]
 
+        # Check multi-turn alignment trajectory if alignment scores are populated
         scores = [
             t.persona_alignment_score
             for t in assistant_turns
