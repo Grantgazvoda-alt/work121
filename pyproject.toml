@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "work121"
 version = "0.2.0"
@@ -24,6 +28,28 @@ work121 = "cli:main"
 work121-live = "run_live_eval:main"
 work121-mcp = "mcp_http_server:main"
 work121-wheel = "hamster_wheel:main"
+
+[tool.setuptools]
+packages = ["agent_comm_robustness"]
+py-modules = [
+    "cli",
+    "dashboard",
+    "eval_runner",
+    "hamster_wheel",
+    "indirect_input_classifier",
+    "live_adapters",
+    "mcp_http_server",
+    "multi_agent_relay",
+    "owasp_defensive_auditor",
+    "regression_tracker",
+    "report_generator",
+    "response_classifier",
+    "run_live_eval",
+    "semantic_judge",
+    "statistical_analysis",
+    "template_library",
+    "tool_runtime",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
