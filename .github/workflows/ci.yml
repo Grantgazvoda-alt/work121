@@ -26,7 +26,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[ui,dev]"
 
-      - name: Run full pytest suite (33 tests including headless Streamlit 7-tab workbench)
+      - name: Build native Rust wire boundary gate (native/Cargo.toml)
+        run: cargo build --release --manifest-path native/Cargo.toml
+
+      - name: Run full pytest suite (34 tests including Web UI, Rust wire parity, and Streamlit workbench)
         run: pytest -v
 
       - name: Run CLI regression gate & OWASP LLM Top 10 defensive audit

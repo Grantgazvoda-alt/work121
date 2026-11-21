@@ -10,7 +10,18 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from agent_comm_robustness import (
+    BenignEdgeGenerator,
+    BenignTemplateConfig,
+    FramingMode,
+    HardenedBoundaryGate,
+    MessageEncoder,
+    PayloadConfig,
+    PayloadGenerator,
+    SuiteRunner,
+)
 from eval_runner import AgentRegistry, EvaluationRunResult, execute_evaluation_run
+from hamster_wheel import ModelHamsterWheel, WheelStageConfig
 from indirect_input_classifier import (
     BoundaryMechanism,
     IndirectInputCategory,
@@ -561,6 +572,73 @@ def _render_configure_and_run_tab() -> None:
             f"Completed {completed}/{total_steps} evaluations across {len(selected_agents)} target agent(s). "
             f"Saved JSONL logs to `{output_dir}/`."
         )
+
+    st.divider()
+    with st.expander("Continuous Model Admission Gauntlet (ModelHamsterWheel)", expanded=False):
+        st.caption(
+            "Run paired indirect-input templates, benign edge cases, cross-protocol encodings, "
+            "and optional 2-hop relay ablations to compute an automated ADMIT / CONDITIONAL_REVIEW / BLOCK verdict."
+        )
+        wheel_keys = registry.list_keys()
+        if not wheel_keys:
+            st.info("No target agents registered.")
+        else:
+            wc1, wc2, wc3, wc4 = st.columns([2, 1, 1, 1])
+            with wc1:
+                wheel_agent_key = st.selectbox(
+                    "Target Model for Admission",
+                    options=wheel_keys,
+                    key="wheel_agent_key",
+                )
+            with wc2:
+                wheel_cycles = st.number_input(
+                    "Cycles",
+                    min_value=1,
+                    max_value=5,
+                    value=1,
+                    key="wheel_cycles",
+                )
+            with wc3:
+                wheel_all_protos = st.checkbox(
+                    "All 5 Protocols",
+                    value=False,
+                    key="wheel_proto_all",
+                )
+            with wc4:
+                wheel_relay_ablation = st.checkbox(
+                    "Relay Ablation",
+                    value=False,
+                    key="wheel_relay_ablation",
+                )
+            if st.button("Run Hamster Wheel Admission Gate", key="wheel_run_btn"):
+                target_agent = registry.get(wheel_agent_key)
+                protos = tuple(ProtocolFormat) if wheel_all_protos else (None,)
+                wheel_cfg = WheelStageConfig(
+                    cycles=int(wheel_cycles),
+                    protocols=protos,
+                    include_relay_ablation=bool(wheel_relay_ablation),
+                )
+                with st.spinner("Executing ModelHamsterWheel revolutions..."):
+                    wheel_report = ModelHamsterWheel.enter(
+                        target_agent,
+                        config=wheel_cfg,
+                        output_dir=Path("eval_runs"),
+                    )
+                st.session_state.last_wheel_report = wheel_report
+                st.session_state.run_results.update(_load_saved_runs_from_disk())
+
+            last_wheel = st.session_state.get("last_wheel_report")
+            if last_wheel is not None:
+                wm1, wm2, wm3, wm4 = st.columns(4)
+                wm1.metric("Admission Verdict", last_wheel.admission_verdict)
+                wm2.metric("Safe Rate", f"{last_wheel.overall_safe_rate:.1%}")
+                wm3.metric("Failure Rate", f"{last_wheel.overall_failure_rate:.1%}")
+                wm4.metric("Cases Executed", last_wheel.total_cases_executed)
+                st.dataframe(
+                    [c.to_dict() for c in last_wheel.cycle_summaries],
+                    width="stretch",
+                    hide_index=True,
+                )
 
 
 def _render_vulnerability_map_tab() -> None:
@@ -1444,6 +1522,71 @@ def _render_multi_agent_relay_tab() -> None:
         mime="application/json",
     )
 
+    st.divider()
+    with st.expander(
+        "Wire Framing & HardenedBoundaryGate Suite (agent_comm_robustness)",
+        expanded=False,
+    ):
+        st.caption(
+            "Benchmark inter-agent wire framing resilience (raw / length_prefixed / ndjson), "
+            "strict UTF-8/JSON boundaries, benign Unicode/depth edge cases, and HMAC-SHA256 OBSERVED claims."
+        )
+        wr1, wr2, wr3 = st.columns([2, 1, 1])
+        with wr1:
+            wire_framing = st.selectbox(
+                "Wire Framing Mode",
+                options=list(FramingMode),
+                format_func=lambda f: f.value,
+                key="wire_framing_select",
+            )
+        with wr2:
+            wire_include_benign = st.checkbox(
+                "Include Benign Edge Cases",
+                value=True,
+                key="wire_include_benign",
+            )
+        with wr3:
+            wire_strict_codes = st.checkbox(
+                "Strict Error Codes",
+                value=True,
+                key="wire_strict_codes",
+            )
+        if st.button("Run Wire Framing Suite", key="wire_run_btn"):
+            bgen = (
+                BenignEdgeGenerator(BenignTemplateConfig()).as_payload_templates()
+                if wire_include_benign
+                else ()
+            )
+            w_cfg = PayloadConfig(framing=wire_framing, custom_templates=bgen)
+            variants = PayloadGenerator(w_cfg).generate()
+            gate = HardenedBoundaryGate(
+                oracle_key=w_cfg.oracle_key,
+                framing=wire_framing,
+                max_wire_bytes=w_cfg.max_wire_bytes,
+                max_claim_chars=w_cfg.max_claim_chars,
+                max_nesting_depth=w_cfg.max_nesting_depth,
+            )
+            w_summary, w_records = SuiteRunner(
+                gate,
+                MessageEncoder(framing=wire_framing),
+                strict_error_codes=bool(wire_strict_codes),
+            ).run(variants)
+            st.session_state.last_wire_suite = (w_summary, w_records)
+
+        last_wire = st.session_state.get("last_wire_suite")
+        if last_wire is not None:
+            w_summary, w_records = last_wire
+            wm1, wm2, wm3, wm4 = st.columns(4)
+            wm1.metric("Pass Rate", f"{w_summary.pass_rate:.1%}")
+            wm2.metric("Cases Passed", f"{w_summary.passed_cases}/{w_summary.total_cases}")
+            wm3.metric("False Accepts", w_summary.false_accepts)
+            wm4.metric("False Rejects", w_summary.false_rejects)
+            st.dataframe(
+                [r.to_dict() for r in w_records[:40]],
+                width="stretch",
+                hide_index=True,
+            )
+
 
 def _render_mcp_tool_lab_tab() -> None:
     registry: AgentRegistry = st.session_state.registry
@@ -1891,7 +2034,9 @@ def main() -> None:
     st.caption(
         "Evaluate live local (Ollama) and cloud LLMs across indirect-input protocols, execute "
         "real MCP JSON-RPC tool-calling loops and PNG multimodal probes, run 2-hop cross-model "
-        "relay ablations, audit OWASP LLM Top 10 defensive controls, and track safety regressions."
+        "relay ablations, audit OWASP LLM Top 10 defensive controls, and track safety regressions. "
+        "For full wire-paged hex/frame inspection and real-time WebSocket jobs, launch `work121-server` "
+        "or `bin/work121.exe ui` (http://127.0.0.1:8775)."
     )
 
     (

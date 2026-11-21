@@ -1,0 +1,9 @@
+[package]
+name = "work121"
+version = "0.2.0"
+edition = "2021"
+description = "Native Rust wire framing, strict JSON, UTF-8, token boundary, and HMAC-SHA256 verifier for work121"
+
+[[bin]]
+name = "work121"
+path = "src/main.rs"

@@ -7,3 +7,6 @@ dist/
 build/
 *.egg-info/
 eval_runs/
+native/target/
+bin/
+.pytest_tmp_run/

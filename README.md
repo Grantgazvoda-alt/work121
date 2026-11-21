@@ -39,30 +39,42 @@ A unified defensive research and CI evaluation toolkit for analyzing how LLM arc
   - `cli.py` (`work121`): Offline/CI regression gate (`run --use-anchor-judge`, `diff --fail-on-regression --fail-on-template-drift`, `audit-owasp`, `stats --fail-on-significant-regression`).
   - `run_live_eval.py` (`work121-live`): Live cross-model evaluation CLI (`--provider`, `--models`, `--all-protocols`, `--paired`, `--mcp-url`, `--embed-model`, `--judge-model`, `--judge-mode`, `--generate-report`).
   - `hamster_wheel.py` (`work121-wheel`): Continuous multi-cycle defensive admission gauntlet (`ModelHamsterWheel`) testing paired indirect inputs, benign templates, wire-protocol translations, 2-hop relay ablations, and OWASP admission verdicts (`ADMIT` / `CONDITIONAL_REVIEW` / `BLOCK`).
-- **`agent_comm_robustness/`**:
-  - Inter-agent parser validation suite (`StrictProtocolParser`, `PayloadGenerator`, `BenignTemplateRegistry`, `RobustnessRunner`) verifying framing resilience across JSON, XML-tagged, and Markdown delimiter boundaries.
+- **`agent_comm_robustness/` & `native/`**:
+  - Inter-agent wire framing & parser validation suite (`HardenedBoundaryGate`, `PayloadGenerator`, `BenignEdgeGenerator`, `SuiteRunner`) verifying framing resilience (`raw`, `length_prefixed`, `ndjson`), strict UTF-8/JSON, token boundaries, and HMAC-SHA256 `OBSERVED` signatures—paired with a zero-dependency **native Rust binary gate** (`native/src/main.rs`) for microsecond Python-vs-Rust parity checking.
+- **`backend_server.py` & `web/` (`work121-server`)**:
+  - Unified Starlette/Uvicorn ASGI server (`http://127.0.0.1:8775`) hosting the **10-page interactive Web Workbench (`web/`)**, 44 REST API endpoints, real-time WebSocket job telemetry (`/ws/jobs/{job_id}`), and MCP JSON-RPC 2.0 endpoints (`/mcp`, `/mcp/clean`, `/tools`, `/health`).
 - **`dashboard.py`**:
   - Unified 7-tab Streamlit workbench (`Configure & Run`, `Indirect Input Taxonomy`, `Live MCP Tools & Multimodal` [9 real JSON-RPC tools], `Live Multi-Agent Relay Lab`, `Susceptibility & Transcripts` [with exact Fisher/McNemar significance testing], `Version Regression Diff`, `OWASP Audit & Controls`).
 
-## CLI Usage
+## CLI & Server Usage
 
 ```bash
+# Build Native Rust Wire Gate & Launch Unified 10-Page Web Workbench + MCP Server (port 8775)
+cargo build --release --manifest-path native/Cargo.toml
+copy native\target\release\work121.exe bin\work121.exe
+bin\work121.exe doctor
+bin\work121.exe wire-bench --iterations 2000
+bin\work121.exe ui --port 8775
+
 # Offline CI Regression Gate, Statistical Hypothesis Testing & OWASP Audit (cli.py)
 python cli.py run --agent policy-assistant@v2.0-hardened --agent policy-assistant@v2.1-candidate --use-anchor-judge --out-dir eval_runs
 python cli.py diff --baseline eval_runs/<baseline>.jsonl --candidate eval_runs/<candidate>.jsonl --fail-on-regression --fail-on-template-drift
 python cli.py stats --baseline eval_runs/<baseline>.jsonl --candidate eval_runs/<candidate>.jsonl --fail-on-significant-regression
 python cli.py audit-owasp --run-file eval_runs/<candidate>.jsonl
 
-# Live HTTP MCP Server (9 Real Tools) & Cross-Model / 5-Protocol Sweeps (run_live_eval.py)
-python mcp_http_server.py --host 127.0.0.1 --port 8775
+# Continuous Hamster Wheel Model Admission Gauntlet (hamster_wheel.py)
+python hamster_wheel.py --provider ollama --model qwen2.5-coder:7b --cycles 2 --relay-ablation --generate-report --output-dir eval_runs
+
+# Live Cross-Model / 5-Protocol Sweeps (run_live_eval.py)
 python run_live_eval.py --provider ollama --models llama3.1:latest qwen2.5-coder:7b --paired --mcp-url http://127.0.0.1:8775/mcp --embed-model nomic-embed-text:latest --output-dir eval_runs
-python run_live_eval.py --provider ollama --model qwen2.5-coder:7b --all-protocols --paired --output-dir eval_runs
 python run_live_eval.py --output-dir eval_runs --generate-report eval_runs/reports
 ```
 
-## Running Tests & Dashboard
+## Running Tests & Dashboards
 
 ```bash
-pytest
-streamlit run dashboard.py
+pytest -v
+python backend_server.py --port 8775   # 10-page Web Workbench + REST/WS + MCP server
+streamlit run dashboard.py             # 7-tab Streamlit Workbench
 ```
+

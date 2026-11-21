@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>work121 — Wire, Interoperability &amp; LLM Boundary Workbench</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">W121</div>
+        <div>
+          <div class="brand-title">work121</div>
+          <div class="brand-sub">Wire &amp; Interop Workbench</div>
+        </div>
+      </div>
+
+      <nav class="nav-list" id="nav-list">
+        <a href="#/overview" class="nav-item" data-route="overview">
+          <span class="nav-dot"></span><span>Overview &amp; Telemetry</span>
+        </a>
+        <a href="#/wire-lab" class="nav-item" data-route="wire-lab">
+          <span class="nav-dot"></span><span>Wire Framing &amp; Hex Lab</span>
+        </a>
+        <a href="#/configure-run" class="nav-item" data-route="configure-run">
+          <span class="nav-dot"></span><span>Eval Suite &amp; Runner</span>
+        </a>
+        <a href="#/taxonomy" class="nav-item" data-route="taxonomy">
+          <span class="nav-dot"></span><span>Indirect Taxonomy &amp; Wire</span>
+        </a>
+        <a href="#/mcp-multimodal" class="nav-item" data-route="mcp-multimodal">
+          <span class="nav-dot"></span><span>MCP Tools &amp; Multimodal</span>
+        </a>
+        <a href="#/relay-lab" class="nav-item" data-route="relay-lab">
+          <span class="nav-dot"></span><span>2-Hop Relay Lab</span>
+        </a>
+        <a href="#/hamster-wheel" class="nav-item" data-route="hamster-wheel">
+          <span class="nav-dot"></span><span>Hamster Wheel Gauntlet</span>
+        </a>
+        <a href="#/susceptibility" class="nav-item" data-route="susceptibility">
+          <span class="nav-dot"></span><span>Susceptibility &amp; Stats</span>
+        </a>
+        <a href="#/regression-diff" class="nav-item" data-route="regression-diff">
+          <span class="nav-dot"></span><span>Version Regression Diff</span>
+        </a>
+        <a href="#/owasp" class="nav-item" data-route="owasp">
+          <span class="nav-dot"></span><span>OWASP Audit &amp; Sandbox</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-row">
+          <span class="status-label">Backend API</span>
+          <span class="badge badge-ok" id="status-api">CONNECTING</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Native Binary</span>
+          <span class="badge badge-muted" id="status-bin">CHECKING</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Live Agents</span>
+          <span class="badge badge-info" id="status-agents">0</span>
+        </div>
+        <button class="btn btn-secondary btn-sm full-width" id="btn-refresh-discovery" type="button">
+          Rediscover Endpoints
+        </button>
+      </div>
+    </aside>
+
+    <div class="main-wrap">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 id="page-title">Overview &amp; Telemetry</h1>
+          <span class="topbar-subtitle" id="page-subtitle">Unified backend, wire parser, MCP runtime, and evaluation workbench</span>
+        </div>
+        <div class="topbar-right">
+          <div class="job-pill hidden" id="active-job-pill">
+            <span class="pulse-dot"></span>
+            <span id="active-job-label">Running job...</span>
+          </div>
+          <a class="btn btn-ghost btn-sm" href="/health" target="_blank" rel="noopener">MCP /health</a>
+          <a class="btn btn-ghost btn-sm" href="/api/reports/export/markdown" target="_blank" rel="noopener">Export Report .md</a>
+        </div>
+      </header>
+
+      <main class="page-content" id="page-root">
+        <div class="loading-box">Loading workbench...</div>
+      </main>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toast-stack"></div>
+  <div class="modal-backdrop hidden" id="modal-backdrop">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3 id="modal-title">Inspector</h3>
+        <button class="btn btn-ghost btn-sm" id="modal-close" type="button">Close</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>
