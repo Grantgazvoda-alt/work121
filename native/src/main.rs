@@ -1322,6 +1322,11 @@ fn parse_wire_flags(args: &[String]) -> Result<(GateConfig, Option<Vec<u8>>, boo
                 let v = args.get(i).ok_or("--oracle-key requires a value")?;
                 cfg.oracle_key = v.as_bytes().to_vec();
             }
+            "--oracle-key-hex" => {
+                i += 1;
+                let v = args.get(i).ok_or("--oracle-key-hex requires a hex value")?;
+                cfg.oracle_key = decode_hex(v)?;
+            }
             "--stdin" => use_stdin = true,
             "--file" => {
                 i += 1;
@@ -1375,6 +1380,12 @@ fn cmd_wire_check_or_batch(subcmd: &str, args: &[String]) -> i32 {
                 "--require-signed-observed" => { i += 1; if let Some(v) = args.get(i) { cfg.require_signed_observed = parse_bool_flag(v).unwrap_or(true); } }
                 "--reject-special-tokens" => { i += 1; if let Some(v) = args.get(i) { cfg.reject_special_tokens = parse_bool_flag(v).unwrap_or(true); } }
                 "--oracle-key" => { i += 1; if let Some(v) = args.get(i) { cfg.oracle_key = v.as_bytes().to_vec(); } }
+                "--oracle-key-hex" => {
+                    i += 1;
+                    if let Some(v) = args.get(i) {
+                        cfg.oracle_key = decode_hex(v).unwrap_or_else(|e| { eprintln!("{e}"); process::exit(2); });
+                    }
+                }
                 "--stdin" | "--json" => {}
                 other => { eprintln!("Unknown flag: {other}"); return 2; }
             }
@@ -1386,16 +1397,59 @@ fn cmd_wire_check_or_batch(subcmd: &str, args: &[String]) -> i32 {
             return 2;
         }
         let mut results = Vec::new();
-        for line in buf.split_terminator('\n') {
-            let trimmed = line.trim_end_matches('\r').trim();
-            let raw = match base64_decode(trimmed) {
-                Ok(b) => b,
-                Err(e) => { eprintln!("Invalid base64 batch line: {e}"); return 2; }
+        let trimmed_buf = buf.trim();
+        if trimmed_buf.starts_with('[') {
+            let val = match JsonParser::new(trimmed_buf).parse_root() {
+                Ok(v) => v,
+                Err((_, e)) => { eprintln!("Invalid JSON batch array: {e}"); return 2; }
             };
-            let t0 = Instant::now();
-            let outcome = parse_bytes(&raw, &cfg);
-            let elapsed_us = t0.elapsed().as_secs_f64() * 1_000_000.0;
-            results.push(outcome_to_json(&raw, &cfg, &outcome, elapsed_us));
+            if let JsonValue::Array(items) = val {
+                for item in items {
+                    let mut case_id_opt: Option<String> = None;
+                    let mut raw_bytes_opt: Option<Vec<u8>> = None;
+                    if let JsonValue::Object(map) = item {
+                        for (k, v) in map {
+                            if k.text == "case_id" {
+                                if let JsonValue::Str(s) = v { case_id_opt = Some(s.text); }
+                            } else if k.text == "raw_hex" {
+                                if let JsonValue::Str(s) = v {
+                                    raw_bytes_opt = decode_hex(&s.text).ok();
+                                }
+                            } else if k.text == "raw_b64" {
+                                if let JsonValue::Str(s) = v {
+                                    raw_bytes_opt = base64_decode(&s.text).ok();
+                                }
+                            }
+                        }
+                    }
+                    if let Some(raw) = raw_bytes_opt {
+                        let t0 = Instant::now();
+                        let outcome = parse_bytes(&raw, &cfg);
+                        let elapsed_us = t0.elapsed().as_secs_f64() * 1_000_000.0;
+                        let outcome_json = outcome_to_json(&raw, &cfg, &outcome, elapsed_us);
+                        let full_json = if let Some(cid) = case_id_opt {
+                            let mut escaped_cid = String::new();
+                            write_json_escaped_ascii(&cid, &mut escaped_cid);
+                            format!("{{\"case_id\":{},{}", escaped_cid, &outcome_json[1..])
+                        } else {
+                            outcome_json
+                        };
+                        results.push(full_json);
+                    }
+                }
+            }
+        } else {
+            for line in buf.split_terminator('\n') {
+                let trimmed = line.trim_end_matches('\r').trim();
+                let raw = match base64_decode(trimmed) {
+                    Ok(b) => b,
+                    Err(e) => { eprintln!("Invalid base64 batch line: {e}"); return 2; }
+                };
+                let t0 = Instant::now();
+                let outcome = parse_bytes(&raw, &cfg);
+                let elapsed_us = t0.elapsed().as_secs_f64() * 1_000_000.0;
+                results.push(outcome_to_json(&raw, &cfg, &outcome, elapsed_us));
+            }
         }
         println!("[{}]", results.join(","));
         return 0;

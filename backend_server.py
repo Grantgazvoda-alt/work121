@@ -1218,7 +1218,7 @@ def create_backend_app(
         hardened_us = round((time.perf_counter_ns() - t0) / 1000.0, 3)
 
         t1 = time.perf_counter_ns()
-        weak_res = NaiveBaselineJsonParser().parse_bytes(raw_bytes)
+        weak_res = NaiveBaselineJsonParser(framing).parse_bytes(raw_bytes)
         weak_us = round((time.perf_counter_ns() - t1) / 1000.0, 3)
 
         native_res = await asyncio.to_thread(

@@ -42,7 +42,7 @@ A unified defensive research and CI evaluation toolkit for analyzing how LLM arc
 - **`agent_comm_robustness/` & `native/`**:
   - Inter-agent wire framing & parser validation suite (`HardenedBoundaryGate`, `PayloadGenerator`, `BenignEdgeGenerator`, `SuiteRunner`) verifying framing resilience (`raw`, `length_prefixed`, `ndjson`), strict UTF-8/JSON, token boundaries, and HMAC-SHA256 `OBSERVED` signatures—paired with a zero-dependency **native Rust binary gate** (`native/src/main.rs`) for microsecond Python-vs-Rust parity checking.
 - **`backend_server.py` & `web/` (`work121-server`)**:
-  - Unified Starlette/Uvicorn ASGI server (`http://127.0.0.1:8775`) hosting the **10-page interactive Web Workbench (`web/`)**, 44 REST API endpoints, real-time WebSocket job telemetry (`/ws/jobs/{job_id}`), and MCP JSON-RPC 2.0 endpoints (`/mcp`, `/mcp/clean`, `/tools`, `/health`).
+  - Unified Starlette/Uvicorn ASGI server (`http://127.0.0.1:8775`) hosting the **10-page wire-paged interactive Web Workbench (`web/`)**, full `/api/*` REST endpoints with Python + Rust native gate parity, real-time WebSocket job telemetry (`/ws/jobs/{job_id}`), and MCP JSON-RPC 2.0 endpoints (`/mcp`, `/mcp/clean`, `/tools`, `/health`).
 - **`dashboard.py`**:
   - Unified 7-tab Streamlit workbench (`Configure & Run`, `Indirect Input Taxonomy`, `Live MCP Tools & Multimodal` [9 real JSON-RPC tools], `Live Multi-Agent Relay Lab`, `Susceptibility & Transcripts` [with exact Fisher/McNemar significance testing], `Version Regression Diff`, `OWASP Audit & Controls`).
 

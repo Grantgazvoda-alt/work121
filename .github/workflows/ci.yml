@@ -30,8 +30,9 @@ jobs:
         run: |
           cargo test --manifest-path native/Cargo.toml
           cargo build --release --manifest-path native/Cargo.toml
+          mkdir -p bin && cp native/target/release/work121 bin/work121
 
-      - name: Run full pytest suite (35 tests including 100% Python-vs-Rust wire parity, Web UI, and Streamlit)
+      - name: Run full pytest suite (Python-vs-Rust wire parity, Web UI/WS backend, and Streamlit)
         run: pytest -v
 
       - name: Run CLI regression gate & OWASP LLM Top 10 defensive audit
