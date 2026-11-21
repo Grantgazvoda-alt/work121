@@ -60,3 +60,5 @@ py-modules = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+addopts = "-o tmp_path_retention_policy=none --basetemp=.pytest_tmp"
+

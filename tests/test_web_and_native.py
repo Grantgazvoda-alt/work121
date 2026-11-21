@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import socket
 import subprocess
+import sys
 import threading
 import time
 
@@ -504,3 +505,42 @@ def test_relay_and_hamster_wheel_end_to_end(live_server: _LiveBackendHandle):
     reports = live_server.get("/api/wheel/reports").json()["reports"]
     assert len(reports) >= 1
     assert reports[0]["agent_key"] == "policy-assistant@v2.0-hardened"
+
+
+def test_one_tap_launcher_desktop_and_home_screen_shortcuts() -> None:
+    ps1_path = Path(__file__).resolve().parents[1] / "one_tap.ps1"
+    assert ps1_path.is_file(), f"one_tap.ps1 missing at {ps1_path}"
+
+    if sys.platform != "win32":
+        pytest.skip("one_tap.ps1 desktop and start menu shortcut installation requires Windows")
+
+    # Verify PowerShell script can install to Desktop and Home Screen without error
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(ps1_path),
+        "-InstallHomeShortcut",
+        "-NoBrowser",
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    assert "Installed shortcut:" in res.stdout
+
+    # Verify shortcut exists in Desktop and Start Menu Programs (Home screen)
+    appdata = Path.home() / "AppData" / "Roaming"
+    start_menu_programs = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+    desktop = Path.home() / "Desktop"
+    onedrive_desktop = Path.home() / "OneDrive" / "Desktop"
+
+    home_shortcut = start_menu_programs / "work121 Workbench.lnk"
+    assert home_shortcut.is_file(), f"Home screen / Start Menu shortcut missing at {home_shortcut}"
+    assert home_shortcut.stat().st_size > 0
+
+    assert (
+        desktop / "work121 Workbench.lnk"
+    ).is_file() or (
+        onedrive_desktop / "work121 Workbench.lnk"
+    ).is_file(), "Desktop shortcut must exist in Desktop or OneDrive Desktop"
+

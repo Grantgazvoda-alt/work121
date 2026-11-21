@@ -6,7 +6,8 @@ param(
   [switch]$NoBrowser,
   [switch]$TabMode,
   [switch]$StopServer,
-  [switch]$InstallDesktopShortcut
+  [switch]$InstallDesktopShortcut,
+  [switch]$InstallHomeShortcut
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,20 +43,32 @@ function Write-TapLog {
 
 function Install-Work121Shortcuts {
   $shell = New-Object -ComObject WScript.Shell
-  $desktopPaths = New-Object System.Collections.Generic.List[string]
+  $targetDirs = New-Object System.Collections.Generic.List[string]
+
+  # Desktop locations (OneDrive redirected & local user desktop)
   $primaryDesktop = [Environment]::GetFolderPath("Desktop")
-  if ($primaryDesktop -and (Test-Path $primaryDesktop)) {
-    $desktopPaths.Add($primaryDesktop)
+  if ($primaryDesktop -and (Test-Path $primaryDesktop) -and ($primaryDesktop -notin $targetDirs)) {
+    $targetDirs.Add($primaryDesktop)
   }
   $localDesktop = Join-Path $env:USERPROFILE "Desktop"
-  if ((Test-Path $localDesktop) -and ($localDesktop -notin $desktopPaths)) {
-    $desktopPaths.Add($localDesktop)
+  if ((Test-Path $localDesktop) -and ($localDesktop -notin $targetDirs)) {
+    $targetDirs.Add($localDesktop)
+  }
+
+  # Home Screen / Start Menu locations (Windows All Apps / Start Menu Search)
+  $startPrograms = [Environment]::GetFolderPath("Programs")
+  if ($startPrograms -and (Test-Path $startPrograms) -and ($startPrograms -notin $targetDirs)) {
+    $targetDirs.Add($startPrograms)
+  }
+  $startRoot = [Environment]::GetFolderPath("StartMenu")
+  if ($startRoot -and (Test-Path $startRoot) -and ($startRoot -notin $targetDirs)) {
+    $targetDirs.Add($startRoot)
   }
 
   $thisScript = Join-Path $Root "one_tap.ps1"
-  foreach ($desk in $desktopPaths) {
+  foreach ($target in $targetDirs) {
     foreach ($shortcutName in @("work121 One-Tap Launch.lnk", "work121 Workbench.lnk")) {
-      $lnkPath = Join-Path $desk $shortcutName
+      $lnkPath = Join-Path $target $shortcutName
       $sc = $shell.CreateShortcut($lnkPath)
       $sc.TargetPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
       $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$thisScript`" -Port $Port"
@@ -66,7 +79,7 @@ function Install-Work121Shortcuts {
       $sc.WindowStyle = 7
       $sc.Description = "work121 - One-Tap Launch (Wire, Interoperability and LLM Boundary Workbench)"
       $sc.Save()
-      Write-TapLog "Installed Desktop shortcut: $lnkPath" "Green"
+      Write-TapLog "Installed shortcut: $lnkPath" "Green"
     }
   }
   try {
@@ -74,11 +87,18 @@ function Install-Work121Shortcuts {
   } catch {}
 }
 
-if ($InstallDesktopShortcut) {
+if ($InstallDesktopShortcut -or $InstallHomeShortcut) {
   Install-Work121Shortcuts
   if ($NoBrowser) {
     exit 0
   }
+}
+
+# Auto-ensure Desktop and Home Screen shortcuts exist
+$primaryDeskLnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "work121 Workbench.lnk"
+$startProgramsLnk = Join-Path ([Environment]::GetFolderPath("Programs")) "work121 Workbench.lnk"
+if ((-not (Test-Path $primaryDeskLnk)) -or (-not (Test-Path $startProgramsLnk))) {
+  Install-Work121Shortcuts
 }
 
 if ($StopServer) {
