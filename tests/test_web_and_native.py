@@ -297,6 +297,13 @@ def test_frontend_static_assets_and_all_routes_wired(live_server: _LiveBackendHa
         assert r.status_code == 200, f"Asset {asset} returned {r.status_code}"
         assert len(r.text) > 100
 
+    for bin_asset in ("/assets/hero_artwork.png", "/assets/work121_art.ico"):
+        rb = live_server.get(bin_asset)
+        assert rb.status_code == 200 and len(rb.content) > 10_000
+
+    pages_eval_js = live_server.get("/assets/pages_eval.js").text
+    assert "btn-onetap-launch" in pages_eval_js and "hero_artwork.png" in pages_eval_js
+
     nav_routes = re.findall(r'data-route="([a-z0-9-]+)"', html)
     assert len(nav_routes) == 10
     app_js = live_server.get("/assets/app.js").text
