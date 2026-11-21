@@ -933,3 +933,63 @@ def test_unified_backend_server_web_ui_wire_rust_parity_and_api_endpoints(tmp_pa
     assert "[ESCAPED_DELIMITER]" in owasp_val["untrusted_isolation"]["sanitized_payload"]
     assert owasp_val["inter_agent_envelope"]["passed"] is True
 
+
+def test_native_rust_cli_commands_and_100pct_python_rust_wire_parity() -> None:
+    import subprocess
+    from agent_comm_robustness import (
+        BenignEdgeGenerator,
+        BenignTemplateConfig,
+        FramingMode,
+        HardenedBoundaryGate,
+        MessageEncoder,
+        PayloadConfig,
+        PayloadGenerator,
+    )
+    from backend_server import _find_native_binary, _run_native_wire_batch
+
+    binary = _find_native_binary()
+    if binary is None:
+        pytest.skip("Native Rust binary not compiled.")
+
+    # 1. version, wire-bench, wire-hex subcommands
+    ver = json.loads(subprocess.check_output([str(binary), "version"], text=True))
+    assert ver["name"] == "work121-native"
+
+    bench = json.loads(
+        subprocess.check_output(
+            [str(binary), "wire-bench", "--iterations", "200", "--json"], text=True
+        )
+    )
+    assert bench["accepted"] == 200 and bench["throughput_msgs_per_sec"] > 1000.0
+
+    hex_out = subprocess.check_output(
+        [str(binary), "wire-hex", "--framing", "raw", "--stdin"],
+        input=b'{"claim":"ok"}',
+    ).decode("utf-8")
+    assert "byte_length: 14" in hex_out and '|{"claim":"ok"}|' in hex_out
+
+    # 2. 100% Python HardenedBoundaryGate vs. Native Rust wire-batch parity across all 3 framings
+    for framing in (FramingMode.RAW, FramingMode.LENGTH_PREFIXED, FramingMode.NDJSON):
+        bgen = BenignEdgeGenerator(BenignTemplateConfig(framing=framing)).as_payload_templates()
+        cfg = PayloadConfig(framing=framing, custom_templates=list(bgen))
+        variants = PayloadGenerator(cfg).generate()
+        encoded_list = list(MessageEncoder(framing=framing).encode_stream(variants))
+        gate = HardenedBoundaryGate(
+            oracle_key=cfg.oracle_key,
+            framing=framing,
+            max_wire_bytes=cfg.max_wire_bytes,
+            max_claim_chars=cfg.max_claim_chars,
+            max_nesting_depth=cfg.max_nesting_depth,
+        )
+        rust_batch = _run_native_wire_batch(encoded_list, framing, cfg)
+        assert rust_batch is not None and len(rust_batch) == len(encoded_list)
+        for enc, r_res in zip(encoded_list, rust_batch):
+            p_res = gate.parse_bytes(enc.raw_bytes)
+            assert r_res["accepted"] == p_res.accepted, (
+                f"Parity mismatch on {enc.variant.case_id} ({framing.value}): "
+                f"py={p_res.accepted}/{p_res.error_code} vs rust={r_res}"
+            )
+            assert r_res["error_code"] == p_res.error_code, (
+                f"Error code mismatch on {enc.variant.case_id} ({framing.value}): "
+                f"py={p_res.error_code} vs rust={r_res['error_code']}"
+            )
