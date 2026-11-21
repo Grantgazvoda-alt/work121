@@ -54,7 +54,7 @@ function Install-Work121Shortcuts {
     $lnkPath = Join-Path $desk "work121 Workbench.lnk"
     $sc = $shell.CreateShortcut($lnkPath)
     $sc.TargetPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-    $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$thisScript`" -Port $Port"
+    $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$thisScript`" -Port $Port"
     $sc.WorkingDirectory = $Root
     if (Test-Path $IconFile) {
       $sc.IconLocation = "$IconFile,0"
@@ -226,17 +226,23 @@ if ($Route -and -not $Streamlit) {
 if (-not $NoBrowser) {
   $openedApp = $false
   if (-not $TabMode) {
+    $appProfile = Join-Path $DataDir "app_profile"
+    New-Item -ItemType Directory -Force $appProfile | Out-Null
+
     $browserCandidates = @(
       (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"),
       (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"),
       (Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"),
       (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe"),
-      (Join-Path $env:LocalAppData "Google\Chrome\Application\chrome.exe")
+      (Join-Path $env:LocalAppData "Google\Chrome\Application\chrome.exe"),
+      (Join-Path $env:ProgramFiles "BraveSoftware\Brave-Browser\Application\brave.exe"),
+      (Join-Path $env:LocalAppData "BraveSoftware\Brave-Browser\Application\brave.exe")
     ) | Where-Object { $_ -and (Test-Path $_) }
 
     foreach ($exe in $browserCandidates) {
       try {
-        Start-Process -FilePath $exe -ArgumentList "--app=$LaunchUrl" | Out-Null
+        $browserArgs = "--user-data-dir=`"$appProfile`" --no-first-run --no-default-browser-check --new-window --app=$LaunchUrl"
+        Start-Process -FilePath $exe -ArgumentList $browserArgs -WindowStyle Normal | Out-Null
         $openedApp = $true
         Write-TapLog "Opened work121 app window via $exe ($LaunchUrl)" "Green"
         break
@@ -244,7 +250,7 @@ if (-not $NoBrowser) {
     }
   }
   if (-not $openedApp) {
-    Start-Process "$LaunchUrl" | Out-Null
+    Start-Process "$LaunchUrl" -WindowStyle Normal | Out-Null
     Write-TapLog "Opened default browser at $LaunchUrl" "Green"
   }
 }
