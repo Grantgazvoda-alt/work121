@@ -18,7 +18,10 @@ $PidFile = Join-Path $DataDir "server.pid"
 $LogFile = Join-Path $DataDir "one_tap.log"
 $ServerOutLog = Join-Path $DataDir "server.log"
 $ServerErrLog = Join-Path $DataDir "server.err.log"
-$IconFile = Join-Path $Root "web\work121.ico"
+$IconFile = Join-Path $Root "web\work121_art.ico"
+if (-not (Test-Path $IconFile)) {
+  $IconFile = Join-Path $Root "web\work121.ico"
+}
 $NativeBin = Join-Path $Root "bin\work121.exe"
 $CargoManifest = Join-Path $Root "native\Cargo.toml"
 
@@ -51,19 +54,24 @@ function Install-Work121Shortcuts {
 
   $thisScript = Join-Path $Root "one_tap.ps1"
   foreach ($desk in $desktopPaths) {
-    $lnkPath = Join-Path $desk "work121 Workbench.lnk"
-    $sc = $shell.CreateShortcut($lnkPath)
-    $sc.TargetPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-    $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$thisScript`" -Port $Port"
-    $sc.WorkingDirectory = $Root
-    if (Test-Path $IconFile) {
-      $sc.IconLocation = "$IconFile,0"
+    foreach ($shortcutName in @("work121 One-Tap Launch.lnk", "work121 Workbench.lnk")) {
+      $lnkPath = Join-Path $desk $shortcutName
+      $sc = $shell.CreateShortcut($lnkPath)
+      $sc.TargetPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+      $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$thisScript`" -Port $Port"
+      $sc.WorkingDirectory = $Root
+      if (Test-Path $IconFile) {
+        $sc.IconLocation = "$IconFile,0"
+      }
+      $sc.WindowStyle = 7
+      $sc.Description = "work121 - One-Tap Launch (Wire, Interoperability and LLM Boundary Workbench)"
+      $sc.Save()
+      Write-TapLog "Installed Desktop shortcut: $lnkPath" "Green"
     }
-    $sc.WindowStyle = 7
-    $sc.Description = "work121 - Wire, Interoperability and LLM Boundary Workbench (One-Tap Launch)"
-    $sc.Save()
-    Write-TapLog "Installed Desktop shortcut: $lnkPath" "Green"
   }
+  try {
+    Start-Process -FilePath "ie4uinit.exe" -ArgumentList "-show" -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+  } catch {}
 }
 
 if ($InstallDesktopShortcut) {

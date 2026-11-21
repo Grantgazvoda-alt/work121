@@ -734,6 +734,41 @@ def create_backend_app(
             }
         )
 
+    async def api_onetap_shortcut(_request: Request) -> JSONResponse:
+        script_path = BASE_DIR / "one_tap.ps1"
+        if not script_path.is_file():
+            return _json_error("one_tap.ps1 not found in workspace root.", 404)
+
+        def _install() -> dict[str, Any]:
+            proc = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script_path),
+                    "-InstallDesktopShortcut",
+                    "-NoBrowser",
+                ],
+                cwd=str(BASE_DIR),
+                capture_output=True,
+                text=True,
+                timeout=15.0,
+                check=False,
+            )
+            return {
+                "installed": proc.returncode == 0,
+                "returncode": proc.returncode,
+                "output": (proc.stdout or proc.stderr or "").strip(),
+                "icon": "/assets/work121_art.ico",
+            }
+
+        res = await asyncio.to_thread(_install)
+        if not res["installed"]:
+            return _json_error(f"Shortcut installation failed: {res['output']}", 500)
+        return JSONResponse(res)
+
     async def api_agents(_request: Request) -> JSONResponse:
         agents = [_agent_info(k, state.registry.get(k)) for k in state.registry.list_keys()]
         return JSONResponse({"agents": agents, "providers": [p.value for p in ProviderKind]})
@@ -2063,6 +2098,7 @@ def create_backend_app(
         Route("/mcp", mcp_perturbed, methods=["POST"]),
         Route("/mcp/clean", mcp_clean, methods=["POST"]),
         Route("/api/overview", api_overview, methods=["GET"]),
+        Route("/api/onetap/shortcut", api_onetap_shortcut, methods=["POST"]),
         Route("/api/agents", api_agents, methods=["GET"]),
         Route("/api/agents/discover", api_agents_discover, methods=["POST"]),
         Route("/api/agents/health", api_agents_health, methods=["POST"]),
