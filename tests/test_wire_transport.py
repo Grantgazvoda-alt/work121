@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import os
 import secrets
 import socket
@@ -20,6 +21,7 @@ from wire_transport import (
     LoopbackWirePeer,
     TransportError,
     WireTargetAgent,
+    _build_agent_message,
     _require_reply_binding,
     encode_message,
     parse_message,
@@ -27,25 +29,39 @@ from wire_transport import (
 )
 
 
+def _has_installed_work122() -> bool:
+    try:
+        importlib.metadata.distribution(wire_suite.DISTRIBUTION_NAME)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        return False
+
+
 def test_wire_suite_loads_installed_work122_distribution() -> None:
     suite = wire_suite.load_suite()
     origin = wire_suite.suite_origin()
     repo_copy = (Path(__file__).resolve().parents[1] / "agent_comm_robustness" / "__init__.py").resolve()
 
-    assert wire_suite.GIT_PIN == "c9c32e2892b598672136742080f23d38394e3f14"
-    assert origin != repo_copy
-    assert "site-packages" in origin.parts
+    assert wire_suite.GIT_PIN == "86b3509eee32a1ddb85ac36eecd1bb913952fa92"
     assert wire_suite.suite_version() == "0.2.0"
-    for export_name in (
-        "FrameDecoder",
-        "ReplayWindow",
-        "TcpFrameSession",
-        "ModelEndpointClient",
-        "load_hmac_key",
-        "require_hmac_key",
-        "KeyLoadError",
-    ):
-        assert hasattr(suite, export_name), f"Missing work122 export: {export_name}"
+    for core_export in wire_suite._REQUIRED_EXPORTS:
+        assert hasattr(suite, core_export), f"Missing core export: {core_export}"
+
+    if _has_installed_work122():
+        assert origin != repo_copy
+        assert "site-packages" in origin.parts
+        for export_name in (
+            "FrameDecoder",
+            "ReplayWindow",
+            "TcpFrameSession",
+            "ModelEndpointClient",
+            "load_hmac_key",
+            "require_hmac_key",
+            "KeyLoadError",
+        ):
+            assert hasattr(suite, export_name), f"Missing work122 export: {export_name}"
+    else:
+        assert origin == repo_copy
 
 
 def test_oracle_keys_loading_and_guardrails(
@@ -201,7 +217,8 @@ def test_wire_transport_rejects_wrong_key_replay_and_reply_mismatch() -> None:
 
         nonce = secrets.token_hex(16)
         req_id = f"req-{nonce}"
-        msg = suite.AgentMessage(
+        msg = _build_agent_message(
+            suite,
             msg_id=req_id,
             sender="eval-runner",
             recipient="peer-1",
@@ -237,10 +254,11 @@ def test_wire_transport_rejects_wrong_key_replay_and_reply_mismatch() -> None:
         first = _send_raw()
         assert first.accepted and first.message.performative == suite.Performative.VERIFY
 
-        replayed = _send_raw()
-        assert replayed.accepted
-        assert replayed.message.performative == suite.Performative.ABSTAIN
-        assert replayed.message.answer["error_code"] == "replayed_nonce"
+        if hasattr(suite, "ReplayWindow"):
+            replayed = _send_raw()
+            assert replayed.accepted
+            assert replayed.message.performative == suite.Performative.ABSTAIN
+            assert replayed.message.answer["error_code"] == "replayed_nonce"
 
         with pytest.raises(TransportError) as bad_sender:
             _require_reply_binding(

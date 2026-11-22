@@ -14,10 +14,12 @@ dependencies = [
     "starlette>=0.37.0",
     "uvicorn>=0.29.0",
     "websockets>=12.0",
-    "agent-comm-robustness @ git+https://github.com/Grantgazvoda-alt/work122.git@c9c32e2892b598672136742080f23d38394e3f14",
 ]
 
 [project.optional-dependencies]
+work122 = [
+    "agent-comm-robustness @ git+https://github.com/Grantgazvoda-alt/work122.git@86b3509eee32a1ddb85ac36eecd1bb913952fa92",
+]
 ui = [
     "streamlit>=1.38.0",
     "altair>=5.0.0",

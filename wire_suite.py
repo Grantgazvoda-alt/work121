@@ -16,7 +16,7 @@ from pathlib import Path
 from types import ModuleType
 
 DISTRIBUTION_NAME = "agent-comm-robustness"
-_DEFAULT_GIT_PIN = "c9c32e2892b598672136742080f23d38394e3f14"
+_DEFAULT_GIT_PIN = "86b3509eee32a1ddb85ac36eecd1bb913952fa92"
 _PIN_PREFIX = f"{DISTRIBUTION_NAME} @ git+https://github.com/Grantgazvoda-alt/work122.git@"
 
 
