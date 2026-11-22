@@ -17,6 +17,7 @@ export async function renderOverviewPage(root, appState) {
     apiGet("/api/jobs"),
     apiGet("/api/runs"),
   ]);
+  if (!root.isConnected) return;
 
   const c = overview.counts || {};
   const agents = overview.agents || [];
@@ -506,6 +507,7 @@ export async function renderConfigureRunPage(root, appState) {
     apiGet("/api/taxonomy"),
     apiGet("/api/agents"),
   ]);
+  if (!root.isConnected) return;
 
   const templates = benignRes.templates || [];
   const indirectTemplates = taxRes.templates || [];
@@ -935,6 +937,7 @@ export async function renderRelayLabPage(root) {
     apiGet("/api/relay/traces"),
     apiGet("/api/agents"),
   ]);
+  if (!root.isConnected) return;
 
   const scenarios = scenRes.scenarios || [];
   const protocols = scenRes.protocols || [];
@@ -1127,6 +1130,7 @@ export async function renderHamsterWheelPage(root, appState) {
     apiGet("/api/wheel/reports"),
     apiGet("/api/agents"),
   ]);
+  if (!root.isConnected) return;
 
   const agents = agentsRes.agents || [];
   let reports = reportsRes.reports || [];

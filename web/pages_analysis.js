@@ -19,6 +19,7 @@ export async function renderSusceptibilityPage(root) {
     apiGet("/api/runs"),
     apiGet("/api/runs/template-matrix"),
   ]);
+  if (!root.isConnected) return;
 
   const runs = runsRes.runs || [];
   const profiles = runsRes.profiles || [];
@@ -380,6 +381,7 @@ export async function renderSusceptibilityPage(root) {
 
 export async function renderRegressionDiffPage(root) {
   const runsRes = await apiGet("/api/runs");
+  if (!root.isConnected) return;
   const runs = runsRes.runs || [];
 
   let diffReport = null;
@@ -628,6 +630,7 @@ export async function renderOwaspPage(root) {
     apiGet("/api/runs"),
     apiGet("/api/owasp/audit"),
   ]);
+  if (!root.isConnected) return;
 
   const catalog = catRes.catalog || [];
   const runs = runsRes.runs || [];

@@ -137,14 +137,17 @@ async function renderCurrentRoute() {
     a.classList.toggle("active", a.dataset.route === route);
   });
 
-  const root = document.getElementById("page-root");
-  root.innerHTML = `<div class="loading-box">Loading ${esc(cfg.title)}...</div>`;
+  const pageRoot = document.getElementById("page-root");
+  const slot = document.createElement("div");
+  slot.dataset.routeSeq = String(seq);
+  slot.innerHTML = `<div class="loading-box">Loading ${esc(cfg.title)}...</div>`;
+  pageRoot.replaceChildren(slot);
 
   try {
-    await cfg.render(root, appState);
+    await cfg.render(slot, appState);
   } catch (err) {
-    if (seq !== renderSeq) return;
-    root.innerHTML = `<div class="card"><h3 class="card-title">Failed to load ${esc(cfg.title)}</h3><p class="card-sub mt-12">${esc(err.message)}</p></div>`;
+    if (seq !== renderSeq || !slot.isConnected) return;
+    slot.innerHTML = `<div class="card"><h3 class="card-title">Failed to load ${esc(cfg.title)}</h3><p class="card-sub mt-12">${esc(err.message)}</p></div>`;
     toast(err.message, "err");
   }
 }

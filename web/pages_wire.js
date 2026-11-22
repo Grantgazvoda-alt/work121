@@ -208,6 +208,7 @@ export async function renderWireLabPage(root, appState) {
     const framing = document.getElementById("wire-framing").value;
     const incBenign = document.getElementById("wire-inc-benign").checked;
     const data = await apiGet(`/api/wire/catalog?framing=${encodeURIComponent(framing)}&include_benign=${incBenign}`);
+    if (!root.isConnected) return;
     catalogCases = data.cases || [];
     page = 1;
     renderTable();
@@ -228,7 +229,9 @@ export async function renderWireLabPage(root, appState) {
       require_signed_observed: document.getElementById("wire-req-sig").checked,
       reject_special_tokens: document.getElementById("wire-rej-tok").checked,
     });
-    document.getElementById("wire-inspector-panel").innerHTML = renderWireInspectionResult(res);
+    if (!root.isConnected) return;
+    const panel = document.getElementById("wire-inspector-panel");
+    if (panel) panel.innerHTML = renderWireInspectionResult(res);
   }
 
   function renderTable() {
@@ -423,6 +426,7 @@ export async function renderTaxonomyPage(root, appState) {
     apiGet("/api/taxonomy"),
     apiGet("/api/taxonomy/handoff-matrix"),
   ]);
+  if (!root.isConnected) return;
   const templates = tax.templates || [];
   let selectedId = templates[0]?.template_id || "";
 
@@ -622,6 +626,7 @@ export async function renderMcpPage(root) {
     apiGet("/api/corpus"),
     apiGet("/api/runs"),
   ]);
+  if (!root.isConnected) return;
   const liveAgents = (agentsRes.agents || []).filter((a) => a.kind === "live");
   const tools = toolsRes.tools || [];
   const savedFiles = (runsRes.runs || []).map((r) => r.filename);
