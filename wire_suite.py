@@ -67,11 +67,11 @@ def load_suite() -> ModuleType:
         cand = _distribution_init(dist)
         if cand.is_file():
             init_path = cand
-    except importlib.metadata.PackageNotFoundError:
+    except importlib.metadata.PackageNotFoundError as err:
         if not repo_init.is_file():
             raise ImportError(
                 f"The {DISTRIBUTION_NAME} distribution is not installed. {install_hint()}"
-            )
+            ) from err
 
     spec = importlib.util.spec_from_file_location(
         _ALIAS,

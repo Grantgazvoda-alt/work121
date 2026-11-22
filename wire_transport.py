@@ -187,7 +187,12 @@ class LoopbackWirePeer:
         self._ready = threading.Event()
         self._closed = False
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # On Windows, SO_REUSEADDR allows binding ports still in TIME_WAIT/teardown,
+        # which can cause transient connect() stalls on ephemeral loopback ports.
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(("127.0.0.1", 0))
         self._sock.listen(32)
         self._sock.settimeout(0.2)
