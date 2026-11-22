@@ -83,6 +83,15 @@ function Install-Work121Shortcuts {
     }
   }
   try {
+    $sig = '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, int flags, IntPtr item1, IntPtr item2);'
+    if (-not ("Work121ShellRefresh" -as [type])) {
+      Add-Type -MemberDefinition $sig -Name "Work121ShellRefresh" -Namespace "Win32" -ErrorAction SilentlyContinue | Out-Null
+    }
+    if ("Win32.Work121ShellRefresh" -as [type]) {
+      [Win32.Work121ShellRefresh]::SHChangeNotify(0x08000000, 0x0000, [IntPtr]::Zero, [IntPtr]::Zero)
+    }
+  } catch {}
+  try {
     Start-Process -FilePath "ie4uinit.exe" -ArgumentList "-show" -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
   } catch {}
 }
@@ -95,9 +104,10 @@ if ($InstallDesktopShortcut -or $InstallHomeShortcut) {
 }
 
 # Auto-ensure Desktop and Home Screen shortcuts exist
+$primaryDeskTapLnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "work121 One-Tap Launch.lnk"
 $primaryDeskLnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "work121 Workbench.lnk"
 $startProgramsLnk = Join-Path ([Environment]::GetFolderPath("Programs")) "work121 Workbench.lnk"
-if ((-not (Test-Path $primaryDeskLnk)) -or (-not (Test-Path $startProgramsLnk))) {
+if ((-not (Test-Path $primaryDeskTapLnk)) -or (-not (Test-Path $primaryDeskLnk)) -or (-not (Test-Path $startProgramsLnk))) {
   Install-Work121Shortcuts
 }
 

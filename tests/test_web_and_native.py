@@ -538,15 +538,18 @@ def test_one_tap_launcher_desktop_and_home_screen_shortcuts() -> None:
     desktop = Path.home() / "Desktop"
     onedrive_desktop = Path.home() / "OneDrive" / "Desktop"
 
-    home_shortcut = start_menu_programs / "work121 Workbench.lnk"
-    assert home_shortcut.is_file(), f"Home screen / Start Menu shortcut missing at {home_shortcut}"
-    assert home_shortcut.stat().st_size > 0
+    for name in ("work121 One-Tap Launch.lnk", "work121 Workbench.lnk"):
+        home_shortcut = start_menu_programs / name
+        assert home_shortcut.is_file(), f"Home screen / Start Menu shortcut missing at {home_shortcut}"
+        assert home_shortcut.stat().st_size > 0
+        assert (
+            desktop / name
+        ).is_file() or (
+            onedrive_desktop / name
+        ).is_file(), f"Desktop shortcut {name} must exist in Desktop or OneDrive Desktop"
 
-    assert (
-        desktop / "work121 Workbench.lnk"
-    ).is_file() or (
-        onedrive_desktop / "work121 Workbench.lnk"
-    ).is_file(), "Desktop shortcut must exist in Desktop or OneDrive Desktop"
+    ico_path = Path(__file__).resolve().parents[1] / "web" / "work121_art.ico"
+    assert ico_path.is_file() and ico_path.stat().st_size > 1000
 
 
 def test_python_and_native_signed_observed_without_sig_enforcement_and_32char_token():
