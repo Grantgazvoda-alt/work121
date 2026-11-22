@@ -4,18 +4,27 @@ from dataclasses import dataclass
 import time
 from typing import Callable, Iterable, Optional, Protocol
 
+from live_providers import LiveProviderError
 from regression_tracker import (
     EvalArtifactRecord,
     ResponseTokenMetadata,
 )
 from response_classifier import (
+    BoundaryJudge,
     ClassificationResult,
     EvaluationTranscript,
     PatternCategory,
+    ResponseOutcome,
     ResponsePatternClassifier,
     TurnRecord,
+    score_boundary_adherence,
+    strip_model_decorations,
 )
-from template_library import RenderedTestCase
+from template_library import (
+    BenignTemplateLibrary,
+    RenderedTestCase,
+    expand_paired_baselines,
+)
 
 
 @dataclass(frozen=True)
@@ -126,10 +135,33 @@ class AgentRegistry:
         return f"{agent.model_id}@{agent.model_version}"
 
     def register(self, agent: TargetAgent) -> None:
-        self._agents[self.key_for(agent)] = agent
+        key = self.key_for(agent)
+        previous = self._agents.get(key)
+        if previous is not None and previous is not agent:
+            close = getattr(previous, "close", None)
+            if callable(close):
+                close()
+        self._agents[key] = agent
+
+    def unregister(self, key: str) -> None:
+        agent = self._agents.pop(key)
+        close = getattr(agent, "close", None)
+        if callable(close):
+            close()
+
+    def close_all(self) -> None:
+        agents = list(self._agents.values())
+        self._agents.clear()
+        for agent in agents:
+            close = getattr(agent, "close", None)
+            if callable(close):
+                close()
 
     def list_keys(self) -> list[str]:
         return sorted(self._agents.keys())
+
+    def agents(self) -> tuple[TargetAgent, ...]:
+        return tuple(self._agents[key] for key in self.list_keys())
 
     def get(self, key: str) -> TargetAgent:
         if key not in self._agents:
@@ -208,55 +240,154 @@ def execute_evaluation_run(
     classifier: Optional[ResponsePatternClassifier] = None,
     judge_id: str = "heuristic-baseline",
     judge_version: str = "1.0.0",
+    library: Optional[BenignTemplateLibrary] = None,
     on_case_complete: Optional[Callable[[int, int, EvalArtifactRecord], None]] = None,
 ) -> EvaluationRunResult:
     """Runs rendered benign validation cases against a target agent and classifies responses."""
-    cases = list(test_cases)
-    clf = classifier or ResponsePatternClassifier()
+    describe = getattr(agent, "describe_transport", None)
+    has_transport = callable(describe)
+    transport: dict[str, object] = {}
+    if has_transport:
+        described = describe()
+        if not isinstance(described, dict):
+            raise TypeError("describe_transport() must return a dict")
+        transport = described
+
+    raw_cases = list(test_cases)
+    if library is not None or has_transport:
+        cases = expand_paired_baselines(
+            raw_cases,
+            library if library is not None else BenignTemplateLibrary(),
+        )
+        clf = classifier or ResponsePatternClassifier(semantic_judge=BoundaryJudge())
+    else:
+        cases = raw_cases
+        clf = classifier or ResponsePatternClassifier()
+
     classifications: list[ClassificationResult] = []
     records: list[EvalArtifactRecord] = []
 
     total = len(cases)
     for idx, case in enumerate(cases, start=1):
         started = time.perf_counter()
-        response = agent.run_case(case)
+        provider_error: LiveProviderError | None = None
+        try:
+            response = agent.run_case(case)
+        except LiveProviderError as exc:
+            provider_error = exc
+            response = None
         latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
+
+        if response is not None and not response.assistant_turns:
+            raise RuntimeError(f"Agent returned no assistant turns for {case.test_case_id}")
+
         baseline_transcript_id = (
-            f"{run_id}:{case.baseline_test_case_id}"
-            if case.baseline_test_case_id
-            else None
+            None
+            if case.is_baseline or not case.baseline_test_case_id
+            else f"{run_id}:{case.baseline_test_case_id}"
         )
-        transcript = EvaluationTranscript(
-            transcript_id=f"{run_id}:{case.test_case_id}",
-            model_id=agent.model_id,
-            architecture_family=agent.architecture_family,
-            category=case.category,
-            turns=response.assistant_turns,
-            baseline_transcript_id=baseline_transcript_id,
-            is_baseline=case.is_baseline,
-            system_boundary=case.system_boundary,
-            user_turns=case.user_turns,
-        )
-        classification = clf.classify(transcript)
-        extra_meta = {
+        transcript_id = f"{run_id}:{case.test_case_id}"
+
+        if provider_error is not None:
+            visible_text = str(provider_error)
+            raw_text = visible_text
+            response_tokens = ResponseTokenMetadata(
+                tokens=(),
+                prompt_token_count=0,
+                completion_token_count=0,
+                tokenizer_name="provider-error",
+            )
+            classification = ClassificationResult(
+                transcript_id=transcript_id,
+                model_id=agent.model_id,
+                model_version=agent.model_version,
+                architecture_family=agent.architecture_family,
+                category=case.category,
+                outcome=ResponseOutcome.INDETERMINATE,
+                confidence=0.0,
+                signals=(provider_error.signal,),
+                baseline_transcript_id=baseline_transcript_id,
+                is_baseline=case.is_baseline,
+            )
+            assistant_turn_texts: list[str] = []
+            align_scores: list[float] = []
+        else:
+            assert response is not None
+            raw_text = str(response.assistant_turns[-1].content)
+            visible_text = strip_model_decorations(raw_text) if (has_transport or library is not None) else raw_text
+            if has_transport or library is not None:
+                assistant_turns = tuple(
+                    TurnRecord(
+                        turn_index=getattr(turn, "turn_index", offset),
+                        role="assistant",
+                        content=strip_model_decorations(str(turn.content)),
+                        persona_alignment_score=(
+                            turn.persona_alignment_score
+                            if getattr(turn, "persona_alignment_score", None) is not None
+                            else score_boundary_adherence(
+                                case.system_boundary,
+                                strip_model_decorations(str(turn.content)),
+                            )
+                        ),
+                        tool_call_id=getattr(turn, "tool_call_id", None),
+                        tool_name=getattr(turn, "tool_name", None),
+                    )
+                    for offset, turn in enumerate(response.assistant_turns)
+                )
+                context_turns = [TurnRecord(0, "system", case.system_boundary)]
+                context_turns.extend(
+                    TurnRecord(offset + 1, "user", text)
+                    for offset, text in enumerate(case.user_turns)
+                )
+                transcript_turns = tuple(context_turns) + assistant_turns
+            else:
+                assistant_turns = tuple(response.assistant_turns)
+                transcript_turns = assistant_turns
+
+            response_tokens = response.response_tokens
+            transcript = EvaluationTranscript(
+                transcript_id=transcript_id,
+                model_id=agent.model_id,
+                model_version=agent.model_version,
+                architecture_family=agent.architecture_family,
+                category=case.category,
+                turns=transcript_turns,
+                baseline_transcript_id=baseline_transcript_id,
+                is_baseline=case.is_baseline,
+                system_boundary=case.system_boundary,
+                user_turns=case.user_turns,
+            )
+            classification = clf.classify(transcript)
+            assistant_turn_texts = [t.content for t in assistant_turns]
+            align_scores = [
+                t.persona_alignment_score
+                for t in assistant_turns
+                if t.persona_alignment_score is not None
+            ]
+
+        extra_meta: dict[str, object] = {
             "system_boundary": case.system_boundary,
             "parameters": case.parameters,
             "is_baseline": case.is_baseline,
             "baseline_test_case_id": case.baseline_test_case_id,
             "latency_ms": latency_ms,
             "user_turns": list(case.user_turns),
-            "assistant_turns": [t.content for t in response.assistant_turns],
+            "assistant_turns": assistant_turn_texts,
+            "transport": transport,
         }
-        align_scores = [
-            t.persona_alignment_score
-            for t in response.assistant_turns
-            if t.persona_alignment_score is not None
-        ]
         if align_scores:
             extra_meta["turn_alignment_scores"] = align_scores
         raw_tool_traces = getattr(agent, "last_tool_traces", ())
         if raw_tool_traces:
             extra_meta["tool_traces"] = [t.to_dict() for t in raw_tool_traces]
+        if provider_error is not None:
+            extra_meta["provider_error"] = {
+                "signal": provider_error.signal,
+                "status": provider_error.status,
+                "detail": str(provider_error),
+            }
+        elif raw_text != visible_text:
+            extra_meta["raw_response_text"] = raw_text
 
         record = EvalArtifactRecord.from_classification(
             run_id=run_id,
@@ -264,8 +395,8 @@ def execute_evaluation_run(
             model_version=agent.model_version,
             prompt_template=case.prompt_template,
             rendered_payload=case.rendered_payload,
-            response_text=response.assistant_turns[-1].content,
-            response_tokens=response.response_tokens,
+            response_text=visible_text,
+            response_tokens=response_tokens,
             classification=classification,
             judge_id=judge_id,
             judge_version=judge_version,

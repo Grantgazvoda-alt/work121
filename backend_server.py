@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -45,7 +44,7 @@ from agent_comm_robustness import (
     WireMutation,
     sign_observed_claim,
 )
-from eval_runner import AgentRegistry, EvaluationRunResult, TargetAgent, execute_evaluation_run
+from eval_runner import AgentRegistry, TargetAgent, execute_evaluation_run
 from hamster_wheel import ModelHamsterWheel, WheelStageConfig
 from indirect_input_classifier import (
     BoundaryMechanism,
@@ -56,7 +55,6 @@ from indirect_input_classifier import (
     build_default_template_library,
 )
 from live_adapters import (
-    DEFAULT_BASE_URLS,
     EmbeddingAlignmentScorer,
     HybridSemanticJudge,
     IndirectInvariantJudge,
@@ -66,8 +64,6 @@ from live_adapters import (
     ProviderKind,
     discover_live_agents,
     is_multimodal_model,
-    list_ollama_models,
-    resolve_api_key,
 )
 from multi_agent_relay import (
     GatewayDefensePolicy,
@@ -76,13 +72,12 @@ from multi_agent_relay import (
     default_relay_scenarios,
 )
 from owasp_defensive_auditor import DefensiveBoundaryValidator, OwaspDefensiveCatalog
-from regression_tracker import ChangeStatus, EvalArtifactRecord, JsonlRunStore, RegressionComparator
+from regression_tracker import EvalArtifactRecord, JsonlRunStore, RegressionComparator
 from report_generator import EmpiricalReportGenerator
 from response_classifier import (
     ClassificationResult,
     EvaluationTranscript,
     PatternCategory,
-    ResponseOutcome,
     ResponsePatternClassifier,
     SusceptibilityMapper,
     TurnRecord,
@@ -580,6 +575,16 @@ def _json_error(message: str, status_code: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
 
 
+async def _read_json_obj(request: Request) -> tuple[Optional[dict[str, Any]], Optional[JSONResponse]]:
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return None, _json_error(f"Invalid JSON request body: {exc}", 400)
+    if not isinstance(body, dict):
+        return None, _json_error("Request body must be a JSON object.", 400)
+    return body, None
+
+
 def _agent_info(agent_key: str, agent: TargetAgent) -> dict[str, Any]:
     is_live = isinstance(agent, LiveHttpAgent)
     info: dict[str, Any] = {
@@ -697,6 +702,13 @@ def create_backend_app(
             return FileResponse(index_file, media_type="text/html")
         return HTMLResponse("<h1>work121 web/index.html not found</h1>", status_code=404)
 
+    async def serve_favicon(_request: Request) -> Response:
+        for name in ("work121_art.ico", "work121.ico"):
+            ico_path = WEB_DIR / name
+            if ico_path.is_file():
+                return FileResponse(ico_path, media_type="image/x-icon")
+        return Response(status_code=204)
+
     # ---- System & Agent Discovery Endpoints ----
 
     async def api_overview(_request: Request) -> JSONResponse:
@@ -749,6 +761,7 @@ def create_backend_app(
                     "-File",
                     str(script_path),
                     "-InstallDesktopShortcut",
+                    "-InstallHomeShortcut",
                     "-NoBrowser",
                 ],
                 cwd=str(BASE_DIR),
@@ -764,7 +777,10 @@ def create_backend_app(
                 "icon": "/assets/work121_art.ico",
             }
 
-        res = await asyncio.to_thread(_install)
+        try:
+            res = await asyncio.to_thread(_install)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return _json_error(f"Shortcut installer failed to execute: {exc}", 500)
         if not res["installed"]:
             return _json_error(f"Shortcut installation failed: {res['output']}", 500)
         return JSONResponse(res)
@@ -779,7 +795,11 @@ def create_backend_app(
         return JSONResponse({"discovered": discovered, "agents": agents})
 
     async def api_agents_health(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         if body.get("agent_key") and body["agent_key"] in state.registry.list_keys():
             ag = state.registry.get(body["agent_key"])
             if isinstance(ag, LiveHttpAgent):
@@ -789,25 +809,31 @@ def create_backend_app(
 
         try:
             provider = ProviderKind(body["provider"])
-        except Exception:
-            return _json_error("Invalid or missing provider.", 400)
+            temp = float(body.get("temperature", 0.0))
+        except (KeyError, TypeError, ValueError) as exc:
+            return _json_error(f"Invalid or missing provider/temperature: {exc}", 400)
         cfg = LiveProviderConfig(
             provider=provider,
             model_id=str(body.get("model_id", "")).strip(),
             model_version=str(body.get("model_version", f"live-{provider.value}")).strip() or "live",
             base_url=str(body.get("base_url", "")).strip(),
             api_key=str(body.get("api_key", "")).strip() or None,
-            temperature=float(body.get("temperature", 0.0)),
+            temperature=temp,
         )
         ok, msg = await asyncio.to_thread(LiveHttpAgent(cfg).health_check)
         return JSONResponse({"ok": ok, "message": msg})
 
     async def api_agents_register(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         try:
             provider = ProviderKind(body["provider"])
-        except Exception:
-            return _json_error("Invalid provider.", 400)
+            temp = float(body.get("temperature", 0.0))
+        except (KeyError, TypeError, ValueError) as exc:
+            return _json_error(f"Invalid provider/temperature: {exc}", 400)
         model_id = str(body.get("model_id", "")).strip()
         if not model_id:
             return _json_error("model_id is required.", 400)
@@ -817,7 +843,7 @@ def create_backend_app(
             model_version=str(body.get("model_version", f"live-{provider.value}")).strip() or "live",
             base_url=str(body.get("base_url", "")).strip(),
             api_key=str(body.get("api_key", "")).strip() or None,
-            temperature=float(body.get("temperature", 0.0)),
+            temperature=temp,
         )
         agent = LiveHttpAgent(cfg)
         state.registry.register(agent)
@@ -853,14 +879,18 @@ def create_backend_app(
         return JSONResponse({"templates": items})
 
     async def api_benign_render(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         tid = str(body.get("template_id", "")).strip()
         try:
             tpl = state.benign_lib.get(tid)
             params = body.get("parameters") or {}
             case_id = str(body.get("test_case_id", "")).strip() or None
             rendered = tpl.render(params, test_case_id=case_id)
-        except (KeyError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             return _json_error(str(exc), 400)
         return JSONResponse(
             {
@@ -876,64 +906,82 @@ def create_backend_app(
         )
 
     async def api_eval_run(request: Request) -> JSONResponse:
-        body = await request.json()
-        agent_keys: list[str] = list(body.get("agent_keys") or [])
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
+        agent_keys: list[str] = [str(k) for k in (body.get("agent_keys") or [])]
         if not agent_keys:
             return _json_error("Select at least one target agent.", 400)
+        known_keys = set(state.registry.list_keys())
+        unknown_keys = [k for k in agent_keys if k not in known_keys]
+        if unknown_keys:
+            return _json_error(f"Unknown agent_key(s): {', '.join(unknown_keys)}", 404)
 
         cases: list[RenderedTestCase] = []
-        # 1. Explicit benign template selections
-        for item in body.get("benign_cases") or []:
-            tpl = state.benign_lib.get(str(item["template_id"]))
-            cases.append(
-                tpl.render(
-                    item.get("parameters") or {},
-                    test_case_id=item.get("test_case_id") or None,
+        try:
+            # 1. Explicit benign template selections
+            for item in body.get("benign_cases") or []:
+                if not isinstance(item, dict):
+                    raise ValueError("Each benign_cases entry must be a JSON object.")
+                tpl = state.benign_lib.get(str(item["template_id"]))
+                cases.append(
+                    tpl.render(
+                        item.get("parameters") or {},
+                        test_case_id=item.get("test_case_id") or None,
+                    )
                 )
-            )
-        # 2. Explicit indirect template selections
-        for item in body.get("indirect_cases") or []:
-            tpl = state.indirect_lib.get(str(item["template_id"]))
-            proto_raw = item.get("protocol")
-            proto = ProtocolFormat(proto_raw) if proto_raw else None
-            if item.get("paired", True):
-                b_c, i_c = tpl.to_paired_test_cases(protocol=proto)
-                cases.extend([b_c, i_c])
-            else:
-                cases.append(tpl.to_rendered_test_case(protocol=proto))
-        # 3. Suite shortcuts
-        suite_mode = str(body.get("suite_mode", "")).strip()
-        if not cases:
-            if suite_mode in ("benign", "all", ""):
-                cases.extend(
-                    tpl.render(test_case_id=f"default-{tpl.template_id}")
-                    for tpl in state.benign_lib.list_templates()
-                )
-            if suite_mode in ("indirect", "all"):
-                proto_raw = body.get("protocol")
+            # 2. Explicit indirect template selections
+            for item in body.get("indirect_cases") or []:
+                if not isinstance(item, dict):
+                    raise ValueError("Each indirect_cases entry must be a JSON object.")
+                tpl = state.indirect_lib.get(str(item["template_id"]))
+                proto_raw = item.get("protocol")
                 proto = ProtocolFormat(proto_raw) if proto_raw else None
-                for tpl in state.indirect_lib.list_templates():
-                    if body.get("paired", True):
-                        cases.extend(tpl.to_paired_test_cases(protocol=proto))
-                    else:
-                        cases.append(tpl.to_rendered_test_case(protocol=proto))
+                if item.get("paired", True):
+                    b_c, i_c = tpl.to_paired_test_cases(protocol=proto)
+                    cases.extend([b_c, i_c])
+                else:
+                    cases.append(tpl.to_rendered_test_case(protocol=proto))
+            # 3. Suite shortcuts
+            suite_mode = str(body.get("suite_mode", "")).strip()
+            if not cases:
+                if suite_mode in ("benign", "all", ""):
+                    cases.extend(
+                        tpl.render(test_case_id=f"default-{tpl.template_id}")
+                        for tpl in state.benign_lib.list_templates()
+                    )
+                if suite_mode in ("indirect", "all"):
+                    proto_raw = body.get("protocol")
+                    proto = ProtocolFormat(proto_raw) if proto_raw else None
+                    for tpl in state.indirect_lib.list_templates():
+                        if body.get("paired", True):
+                            cases.extend(tpl.to_paired_test_cases(protocol=proto))
+                        else:
+                            cases.append(tpl.to_rendered_test_case(protocol=proto))
+        except (KeyError, TypeError, ValueError) as exc:
+            return _json_error(str(exc), 400)
 
         if not cases:
             return _json_error("No evaluation cases constructed.", 400)
 
-        scoring_engine = str(body.get("scoring_engine", "hybrid"))
-        drift_threshold = float(body.get("drift_threshold", -0.08))
-        judge_agent_key = str(body.get("judge_agent_key", ""))
-        attach_mcp = bool(body.get("attach_mcp", True))
-        use_embeddings = bool(body.get("use_embeddings", False))
-        redact = bool(body.get("redact", False))
+        try:
+            scoring_engine = str(body.get("scoring_engine", "hybrid"))
+            drift_threshold = float(body.get("drift_threshold", -0.08))
+            judge_agent_key = str(body.get("judge_agent_key", ""))
+            attach_mcp = bool(body.get("attach_mcp", True))
+            use_embeddings = bool(body.get("use_embeddings", False))
+            redact = bool(body.get("redact", False))
 
-        clf, judge_id = _build_classifier(
-            registry=state.registry,
-            scoring_engine=scoring_engine,
-            drift_threshold=drift_threshold,
-            judge_agent_key=judge_agent_key,
-        )
+            clf, judge_id = _build_classifier(
+                registry=state.registry,
+                scoring_engine=scoring_engine,
+                drift_threshold=drift_threshold,
+                judge_agent_key=judge_agent_key,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            return _json_error(str(exc), 400)
 
         job_id = state.jobs.create_job(
             "eval",
@@ -949,6 +997,7 @@ def create_backend_app(
                 completed = 0
                 written_runs: list[dict[str, Any]] = []
                 embed_scorer = EmbeddingAlignmentScorer() if use_embeddings else None
+                used_run_ids: set[str] = set()
 
                 for a_key in agent_keys:
                     base_ag = state.registry.get(a_key)
@@ -961,7 +1010,15 @@ def create_backend_app(
                         )
                     else:
                         ag = base_ag
-                    run_id = f"{_safe_slug(f'{ag.model_id}-{ag.model_version}')}-{ts}"
+                    base_slug = _safe_slug(f"{ag.model_id}-{ag.model_version}")
+                    run_id = f"{base_slug}-{ts}"
+                    out_path = state.runs_dir / f"{run_id}.jsonl"
+                    suffix_idx = 2
+                    while run_id in used_run_ids or out_path.exists():
+                        run_id = f"{base_slug}-{ts}-{suffix_idx}"
+                        out_path = state.runs_dir / f"{run_id}.jsonl"
+                        suffix_idx += 1
+                    used_run_ids.add(run_id)
 
                     def _on_case(idx: int, total: int, rec: EvalArtifactRecord, _ak: str = a_key) -> None:
                         nonlocal completed
@@ -994,7 +1051,6 @@ def create_backend_app(
                         judge_id=judge_id,
                         on_case_complete=_on_case,
                     )
-                    out_path = state.runs_dir / f"{run_id}.jsonl"
                     store.write_records(out_path, res.records, append=False, redact_raw_content=redact)
                     written_runs.append(
                         {
@@ -1049,7 +1105,11 @@ def create_backend_app(
         )
 
     async def api_wire_suite_run(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         try:
             framing = FramingMode(body.get("framing", "raw"))
             cfg, variants = _build_wire_variants(
@@ -1159,15 +1219,21 @@ def create_backend_app(
         return JSONResponse(res)
 
     async def api_wire_inspect(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         try:
             framing = FramingMode(body.get("framing", "raw"))
-        except ValueError as exc:
+            max_wire_bytes = int(body.get("max_wire_bytes", 32_768))
+            max_claim_chars = int(body.get("max_claim_chars", 8_192))
+            max_nesting_depth = int(body.get("max_nesting_depth", 8))
+        except (TypeError, ValueError) as exc:
             return _json_error(str(exc), 400)
+        if max_wire_bytes < 1 or max_claim_chars < 1 or max_nesting_depth < 1:
+            return _json_error("Limit parameters must be >= 1.", 400)
 
-        max_wire_bytes = int(body.get("max_wire_bytes", 32_768))
-        max_claim_chars = int(body.get("max_claim_chars", 8_192))
-        max_nesting_depth = int(body.get("max_nesting_depth", 8))
         require_sig = bool(body.get("require_signed_observed", True))
         reject_special = bool(body.get("reject_special_tokens", True))
 
@@ -1212,12 +1278,17 @@ def create_backend_app(
         else:
             raw_text = str(body.get("raw_text", ""))
             mut_raw = body.get("mutation") or {}
+            if not isinstance(mut_raw, dict):
+                return _json_error("mutation must be a JSON object.", 400)
             mut_kind = str(mut_raw.get("kind", "none"))
             mut_params = dict(mut_raw.get("params") or {})
             for b_key in ("data", "target", "replacement", "extra_line"):
                 if b_key in mut_params and isinstance(mut_params[b_key], str):
                     if mut_params.get(f"{b_key}_encoding") == "hex":
-                        mut_params[b_key] = bytes.fromhex("".join(mut_params[b_key].split()))
+                        try:
+                            mut_params[b_key] = bytes.fromhex("".join(mut_params[b_key].split()))
+                        except ValueError as exc:
+                            return _json_error(f"Invalid mutation hex bytes for '{b_key}': {exc}", 400)
                     else:
                         mut_params[b_key] = mut_params[b_key].encode("utf-8", errors="surrogatepass")
             variant = PayloadVariant(
@@ -1291,7 +1362,11 @@ def create_backend_app(
         )
 
     async def api_wire_sign_observed(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         try:
             framing = FramingMode(body.get("framing", "raw"))
             msg = AgentMessage(
@@ -1388,7 +1463,11 @@ def create_backend_app(
         )
 
     async def api_taxonomy_translate(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         try:
             tpl = state.indirect_lib.get(str(body["template_id"]))
             proto = ProtocolFormat(str(body["target_protocol"]))
@@ -1482,9 +1561,17 @@ def create_backend_app(
         )
 
     async def api_mcp_call(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         tool_name = str(body.get("tool_name", "")).strip()
-        arguments = body.get("arguments") or {}
+        arguments = body.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return _json_error("arguments must be a JSON object.", 400)
         mode = str(body.get("mode", "perturbed"))
         if not tool_name:
             return _json_error("tool_name is required.", 400)
@@ -1509,7 +1596,11 @@ def create_backend_app(
         return JSONResponse(trace.to_dict())
 
     async def api_mcp_tool_loop(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         agent_key = str(body.get("agent_key", "")).strip()
         if agent_key not in state.registry.list_keys():
             return _json_error(f"Unknown agent_key: '{agent_key}'", 404)
@@ -1557,7 +1648,11 @@ def create_backend_app(
         return JSONResponse(res)
 
     async def api_mcp_multimodal(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         labels = [str(x) for x in (body.get("labels") or ["Axis X: Latency (ms)", "Axis Y: Throughput (tok/s)"])]
         title = str(body.get("title", "Cross-Model Latency Benchmark"))
 
@@ -1630,7 +1725,11 @@ def create_backend_app(
         return JSONResponse({"corpus_dir": str(state.corpus_dir), "documents": docs})
 
     async def api_corpus_save(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         raw_name = Path(str(body.get("filename", "")).strip()).name
         safe_name = _safe_slug(raw_name)
         if not safe_name:
@@ -1689,7 +1788,11 @@ def create_backend_app(
         return JSONResponse({"traces": traces})
 
     async def api_relay_run(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         scenario_id = str(body.get("scenario_id", ""))
         scenario = next((s for s in default_relay_scenarios() if s.scenario_id == scenario_id), None)
         if scenario is None:
@@ -1759,35 +1862,42 @@ def create_backend_app(
         return JSONResponse({"reports": reports})
 
     async def api_wheel_start(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         agent_key = str(body.get("agent_key", "")).strip()
         if agent_key not in state.registry.list_keys():
             return _json_error(f"Unknown agent_key: '{agent_key}'", 404)
         base_ag = state.registry.get(agent_key)
 
-        all_protocols = bool(body.get("all_protocols", False))
-        protocols_raw = body.get("protocols")
-        if all_protocols:
-            protocols = tuple(ProtocolFormat)
-        elif protocols_raw:
-            protocols = tuple(ProtocolFormat(p) if p else None for p in protocols_raw)
-        else:
-            protocols = (None,)
+        try:
+            all_protocols = bool(body.get("all_protocols", False))
+            protocols_raw = body.get("protocols")
+            if all_protocols:
+                protocols = tuple(ProtocolFormat)
+            elif protocols_raw:
+                protocols = tuple(ProtocolFormat(p) if p else None for p in protocols_raw)
+            else:
+                protocols = (None,)
 
-        ind_ids = body.get("indirect_template_ids")
-        ben_ids = body.get("benign_template_ids")
-        cfg = WheelStageConfig(
-            include_indirect_paired=bool(body.get("include_indirect_paired", True)),
-            include_benign_suite=bool(body.get("include_benign_suite", True)),
-            protocols=protocols,
-            include_relay_ablation=bool(body.get("include_relay_ablation", False)),
-            cycles=max(1, int(body.get("cycles", 1))),
-            max_failure_rate_for_admit=float(body.get("max_failure_rate_for_admit", 0.05)),
-            max_paired_regression_for_admit=float(body.get("max_paired_regression_for_admit", 0.05)),
-            stop_on_gate_fail=bool(body.get("stop_on_gate_fail", False)),
-            indirect_template_ids=tuple(ind_ids) if ind_ids else None,
-            benign_template_ids=tuple(ben_ids) if ben_ids else None,
-        )
+            ind_ids = body.get("indirect_template_ids")
+            ben_ids = body.get("benign_template_ids")
+            cfg = WheelStageConfig(
+                include_indirect_paired=bool(body.get("include_indirect_paired", True)),
+                include_benign_suite=bool(body.get("include_benign_suite", True)),
+                protocols=protocols,
+                include_relay_ablation=bool(body.get("include_relay_ablation", False)),
+                cycles=max(1, int(body.get("cycles", 1))),
+                max_failure_rate_for_admit=float(body.get("max_failure_rate_for_admit", 0.05)),
+                max_paired_regression_for_admit=float(body.get("max_paired_regression_for_admit", 0.05)),
+                stop_on_gate_fail=bool(body.get("stop_on_gate_fail", False)),
+                indirect_template_ids=tuple(ind_ids) if ind_ids else None,
+                benign_template_ids=tuple(ben_ids) if ben_ids else None,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            return _json_error(str(exc), 400)
         attach_mcp = bool(body.get("attach_mcp", True))
         use_embeddings = bool(body.get("use_embeddings", False))
         judge_agent_key = str(body.get("judge_agent_key", ""))
@@ -1844,7 +1954,7 @@ def create_backend_app(
         runs = state.load_all_runs()
         all_classifications: list[ClassificationResult] = []
         run_summaries = []
-        for run_id, bundle in sorted(runs.items(), reverse=True):
+        for _run_id, bundle in sorted(runs.items(), reverse=True):
             recs: list[EvalArtifactRecord] = bundle["records"]
             all_classifications.extend(_records_to_classifications(recs))
             row = EmpiricalReportGenerator._summarize_records(recs)
@@ -1914,7 +2024,11 @@ def create_backend_app(
         )
 
     async def api_runs_stats(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         runs = state.load_all_runs()
         id_a = str(body.get("run_a_id", ""))
         id_b = str(body.get("run_b_id", ""))
@@ -1927,16 +2041,29 @@ def create_backend_app(
         return JSONResponse({"matrix": build_template_robustness_matrix(state.runs_dir)})
 
     async def api_runs_diff(request: Request) -> JSONResponse:
-        body = await request.json()
-        drift_tol = float(body.get("drift_tol", -0.05))
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
+        try:
+            drift_tol = float(body.get("drift_tol", -0.05))
+        except (TypeError, ValueError) as exc:
+            return _json_error(f"Invalid drift_tol: {exc}", 400)
         store = JsonlRunStore()
 
-        if body.get("baseline_jsonl") and body.get("candidate_jsonl"):
+        has_b_raw = body.get("baseline_jsonl") is not None
+        has_c_raw = body.get("candidate_jsonl") is not None
+        if has_b_raw or has_c_raw:
+            b_raw = str(body.get("baseline_jsonl") or "")
+            c_raw = str(body.get("candidate_jsonl") or "")
+            if not b_raw.strip() or not c_raw.strip():
+                return _json_error("Both baseline_jsonl and candidate_jsonl must be non-empty when uploading JSONL.", 400)
             with tempfile.TemporaryDirectory() as tmpdir:
                 p_b = Path(tmpdir) / "baseline.jsonl"
                 p_c = Path(tmpdir) / "candidate.jsonl"
-                p_b.write_text(str(body["baseline_jsonl"]), encoding="utf-8")
-                p_c.write_text(str(body["candidate_jsonl"]), encoding="utf-8")
+                p_b.write_text(b_raw, encoding="utf-8")
+                p_c.write_text(c_raw, encoding="utf-8")
                 try:
                     base_recs = store.load_records(p_b)
                     cand_recs = store.load_records(p_c)
@@ -1951,7 +2078,10 @@ def create_backend_app(
             base_recs = runs[b_id]["records"]
             cand_recs = runs[c_id]["records"]
 
-        report = RegressionComparator(drift_regression_tolerance=drift_tol).compare(base_recs, cand_recs)
+        try:
+            report = RegressionComparator(drift_regression_tolerance=drift_tol).compare(base_recs, cand_recs)
+        except ValueError as exc:
+            return _json_error(str(exc), 400)
         return JSONResponse(report.to_dict())
 
     async def api_report_export(request: Request) -> Response:
@@ -2030,7 +2160,11 @@ def create_backend_app(
         )
 
     async def api_owasp_validate(request: Request) -> JSONResponse:
-        body = await request.json()
+        body, err = await _read_json_obj(request)
+        if err is not None:
+            return err
+        assert body is not None
+
         validator = DefensiveBoundaryValidator()
         untrusted_text = str(body.get("untrusted_text", ""))
         agent_message = body.get("agent_message", "")
@@ -2093,6 +2227,7 @@ def create_backend_app(
 
     routes: list[Any] = [
         Route("/", serve_index, methods=["GET"]),
+        Route("/favicon.ico", serve_favicon, methods=["GET"]),
         Route("/health", mcp_health, methods=["GET"]),
         Route("/tools", mcp_list_tools_get, methods=["GET"]),
         Route("/mcp", mcp_perturbed, methods=["POST"]),

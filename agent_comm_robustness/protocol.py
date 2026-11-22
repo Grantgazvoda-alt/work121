@@ -355,25 +355,26 @@ class HardenedBoundaryGate:
         )
 
         # 7. Cryptographic provenance validation
-        if msg.provenance == Provenance.OBSERVED and self.require_signed_observed:
-            if not self.oracle_key:
-                return self._reject("oracle_key_unconfigured", "oracle key is not configured")
-            if not msg.oracle_sig:
-                return self._reject(
-                    "missing_oracle_signature",
-                    "observed provenance requires oracle_sig",
-                )
-            if not HEX_SHA256_RE.match(msg.oracle_sig):
-                return self._reject(
-                    "malformed_oracle_signature_format",
-                    "oracle_sig must be a 64-char lowercase hex SHA-256 digest",
-                )
-            expected = sign_observed_claim(msg, self.oracle_key)
-            if not hmac.compare_digest(expected, msg.oracle_sig):
-                return self._reject(
-                    "invalid_oracle_signature",
-                    "HMAC signature verification failed",
-                )
+        if msg.provenance == Provenance.OBSERVED:
+            if self.require_signed_observed or (msg.oracle_sig is not None and self.oracle_key):
+                if not self.oracle_key:
+                    return self._reject("oracle_key_unconfigured", "oracle key is not configured")
+                if not msg.oracle_sig:
+                    return self._reject(
+                        "missing_oracle_signature",
+                        "observed provenance requires oracle_sig",
+                    )
+                if not HEX_SHA256_RE.match(msg.oracle_sig):
+                    return self._reject(
+                        "malformed_oracle_signature_format",
+                        "oracle_sig must be a 64-char lowercase hex SHA-256 digest",
+                    )
+                expected = sign_observed_claim(msg, self.oracle_key)
+                if not hmac.compare_digest(expected, msg.oracle_sig):
+                    return self._reject(
+                        "invalid_oracle_signature",
+                        "HMAC signature verification failed",
+                    )
         elif msg.oracle_sig is not None:
             return self._reject(
                 "unexpected_signature_on_non_observed",

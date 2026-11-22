@@ -238,10 +238,10 @@ export async function renderWireLabPage(root, appState) {
       if (cat && c.category !== cat) return false;
       if (!q) return true;
       return (
-        c.case_id.toLowerCase().includes(q) ||
+        (c.case_id || "").toLowerCase().includes(q) ||
         (c.expected_error_code || "").toLowerCase().includes(q) ||
-        c.description.toLowerCase().includes(q) ||
-        (c.tags || []).some((t) => t.toLowerCase().includes(q))
+        (c.description || "").toLowerCase().includes(q) ||
+        (c.tags || []).some((t) => String(t).toLowerCase().includes(q))
       );
     });
 
@@ -276,7 +276,13 @@ export async function renderWireLabPage(root, appState) {
     }).join("");
 
     tbody.querySelectorAll("tr[data-case-id]").forEach((tr) => {
-      tr.addEventListener("click", () => inspectCatalogCase(tr.dataset.caseId));
+      tr.addEventListener("click", async () => {
+        try {
+          await inspectCatalogCase(tr.dataset.caseId);
+        } catch (err) {
+          toast(err.message, "err");
+        }
+      });
     });
 
     const pager = document.getElementById("wire-pager");
@@ -291,9 +297,16 @@ export async function renderWireLabPage(root, appState) {
     document.getElementById("wire-next")?.addEventListener("click", () => { page++; renderTable(); });
   }
 
-  document.getElementById("btn-wire-load-catalog").addEventListener("click", loadCatalog);
-  document.getElementById("wire-framing").addEventListener("change", loadCatalog);
-  document.getElementById("wire-inc-benign").addEventListener("change", loadCatalog);
+  const safeLoadCatalog = async () => {
+    try {
+      await loadCatalog();
+    } catch (err) {
+      toast(err.message, "err");
+    }
+  };
+  document.getElementById("btn-wire-load-catalog").addEventListener("click", safeLoadCatalog);
+  document.getElementById("wire-framing").addEventListener("change", safeLoadCatalog);
+  document.getElementById("wire-inc-benign").addEventListener("change", safeLoadCatalog);
   document.getElementById("wire-search").addEventListener("input", () => { page = 1; renderTable(); });
   document.getElementById("wire-cat-filter").addEventListener("change", () => { page = 1; renderTable(); });
 
@@ -372,13 +385,23 @@ export async function renderWireLabPage(root, appState) {
         const mutVal = document.getElementById("wire-mut-val").value.trim();
         const mutEnc = document.getElementById("wire-mut-enc").value;
         const params = {};
-        if (mutKind === "truncate_bytes") params.length = Number(mutVal || 32);
-        else if (mutKind === "prepend_bytes" || mutKind === "append_bytes") {
+        if (mutKind === "truncate_bytes") {
+          const n = mutVal ? Number(mutVal) : 32;
+          if (!Number.isFinite(n) || n < 0) throw new Error("truncate_bytes param must be a non-negative integer");
+          params.length = Math.floor(n);
+        } else if (mutKind === "prepend_bytes" || mutKind === "append_bytes") {
           params.data = mutVal;
           params.data_encoding = mutEnc;
         } else if (mutKind === "corrupt_frame_length") {
-          if (mutVal.startsWith("delta:")) params.delta = Number(mutVal.slice(6));
-          else params.declared_len = Number(mutVal || 9999);
+          if (mutVal.startsWith("delta:")) {
+            const d = Number(mutVal.slice(6));
+            if (!Number.isFinite(d)) throw new Error("corrupt_frame_length delta must be numeric");
+            params.delta = Math.floor(d);
+          } else {
+            const dl = mutVal ? Number(mutVal) : 9999;
+            if (!Number.isFinite(dl) || dl < 0) throw new Error("corrupt_frame_length param must be a non-negative integer");
+            params.declared_len = Math.floor(dl);
+          }
         } else if (mutKind === "inject_ndjson_newline") {
           params.extra_line = mutVal || '{"injected":true}';
         }
@@ -794,9 +817,13 @@ Structured provenance envelopes eliminated 100% of indirect formatting drift.</t
     });
     document.querySelectorAll(".corpus-del").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        await apiDelete(`/api/corpus/${encodeURIComponent(btn.dataset.name)}`);
-        toast(`Deleted ${btn.dataset.name}`, "ok");
-        await refreshCorpus();
+        try {
+          await apiDelete(`/api/corpus/${encodeURIComponent(btn.dataset.name)}`);
+          toast(`Deleted ${btn.dataset.name}`, "ok");
+          await refreshCorpus();
+        } catch (err) {
+          toast(err.message, "err");
+        }
       });
     });
   }
@@ -818,9 +845,13 @@ Structured provenance envelopes eliminated 100% of indirect formatting drift.</t
     const body = { labels };
     if (uploadedImgB64) body.image_b64 = uploadedImgB64;
     if (sendToModel) body.agent_key = document.getElementById("mcp-live-agent").value;
+    const sendBtn = document.getElementById("btn-mm-send");
+    if (sendToModel && sendBtn) sendBtn.disabled = true;
     try {
       const res = await apiPost("/api/mcp/multimodal", body);
-      document.getElementById("mm-out").innerHTML = `
+      const outEl = document.getElementById("mm-out");
+      if (!outEl) return;
+      outEl.innerHTML = `
         <div class="card-sub mb-12">PNG Payload: <code>${res.byte_length} bytes</code></div>
         <img class="img-preview mb-12" src="data:image/png;base64,${res.image_b64}" alt="Diagnostic Chart" />
         ${res.probe_result ? `
@@ -829,6 +860,8 @@ Structured provenance envelopes eliminated 100% of indirect formatting drift.</t
       `;
     } catch (err) {
       toast(err.message, "err");
+    } finally {
+      if (sendToModel && sendBtn) sendBtn.disabled = !liveAgents.length;
     }
   }
 
@@ -848,7 +881,9 @@ Structured provenance envelopes eliminated 100% of indirect formatting drift.</t
         disp._chart_b64 = disp.result.base64_png;
         disp.result = { ...disp.result, base64_png: `<${disp.result.base64_png.length} base64 chars>` };
       }
-      document.getElementById("rpc-call-out").innerHTML = `
+      const outEl = document.getElementById("rpc-call-out");
+      if (!outEl) return;
+      outEl.innerHTML = `
         <div class="btn-row mb-12">
           ${tr.is_error ? `<span class="badge badge-bad">isError=true</span>` : `<span class="badge badge-ok">isError=false</span>`}
           <span class="badge badge-info">${tr.latency_ms} ms</span>
@@ -861,7 +896,9 @@ Structured provenance envelopes eliminated 100% of indirect formatting drift.</t
     }
   });
 
-  document.getElementById("btn-mcp-loop").addEventListener("click", async () => {
+  document.getElementById("btn-mcp-loop").addEventListener("click", async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
     try {
       const mode = document.getElementById("mcp-perturbed-chk").checked ? "perturbed" : "clean";
       const tool_names = document.getElementById("mcp-loop-tools").value.split(",").map((s) => s.trim()).filter(Boolean);
@@ -873,20 +910,24 @@ Structured provenance envelopes eliminated 100% of indirect formatting drift.</t
         tool_names,
         mode,
       });
-      document.getElementById("mcp-loop-out").innerHTML = `
+      const outEl = document.getElementById("mcp-loop-out");
+      if (!outEl) return;
+      outEl.innerHTML = `
         <div class="btn-row mb-12">
-          ${outcomeBadge(res.invariant_verdict.outcome)}
-          <span class="badge badge-info">Tool Calls: ${res.tool_traces.length}</span>
+          ${outcomeBadge(res.invariant_verdict?.outcome)}
+          <span class="badge badge-info">Tool Calls: ${(res.tool_traces || []).length}</span>
           <span class="badge badge-muted">Rounds: ${res.rounds_executed}</span>
           <span class="badge badge-muted">${res.total_latency_ms} ms</span>
         </div>
         <div class="grid grid-2">
-          <div><div class="card-sub mb-12"><strong>MCP JSON-RPC 2.0 Tool Traces</strong></div><pre class="code-box">${esc(JSON.stringify(res.tool_traces, null, 2))}</pre></div>
+          <div><div class="card-sub mb-12"><strong>MCP JSON-RPC 2.0 Tool Traces</strong></div><pre class="code-box">${esc(JSON.stringify(res.tool_traces || [], null, 2))}</pre></div>
           <div><div class="card-sub mb-12"><strong>Final Model Response</strong></div><pre class="code-box">${esc(res.final_response)}</pre></div>
         </div>
       `;
     } catch (err) {
       toast(err.message, "err");
+    } finally {
+      btn.disabled = !liveAgents.length;
     }
   });
 

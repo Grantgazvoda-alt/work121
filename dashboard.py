@@ -153,10 +153,10 @@ def _init_state() -> None:
     if "indirect_classifier" not in st.session_state:
         st.session_state.indirect_classifier = IndirectInputClassifier()
     if "registry" not in st.session_state:
-        live_agents = discover_live_agents()
-        st.session_state.registry = (
-            AgentRegistry(agents=live_agents) if live_agents else AgentRegistry()
-        )
+        reg = AgentRegistry()
+        for live_ag in discover_live_agents():
+            reg.register(live_ag)
+        st.session_state.registry = reg
     if "queued_cases" not in st.session_state:
         st.session_state.queued_cases: list[RenderedTestCase] = []
     if "run_results" not in st.session_state:
@@ -1657,6 +1657,7 @@ def _render_mcp_tool_lab_tab() -> None:
             "list_eval_runs",
             "inspect_eval_run",
             "evaluate_protocol_handoff",
+            "statistical_significance_test",
         ]
 
     st.markdown(
@@ -1709,7 +1710,7 @@ def _render_mcp_tool_lab_tab() -> None:
     preset = presets[preset_name]
     default_loop_tools = [t for t in preset["tools"] if t in available_tool_names]
     enabled_tools = st.multiselect(
-        "Enabled MCP Tools for Loop (all 8 real tools available)",
+        "Enabled MCP Tools for Loop (all 9 real tools available)",
         options=available_tool_names,
         default=default_loop_tools or available_tool_names[:1],
         key=f"mcp_enabled_tools_{preset['template_id']}",

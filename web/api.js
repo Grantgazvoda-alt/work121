@@ -66,7 +66,15 @@ export function outcomeBadge(outcome) {
   return `<span class="badge badge-muted">${esc(v)}</span>`;
 }
 
-export function connectJobStream(jobId, onEvent) {
+export function connectJobStream(jobId, handlerOrOpts) {
+  const callbacks =
+    typeof handlerOrOpts === "function"
+      ? { onEvent: handlerOrOpts, onComplete: null }
+      : {
+          onEvent: typeof handlerOrOpts?.onEvent === "function" ? handlerOrOpts.onEvent : () => {},
+          onComplete: typeof handlerOrOpts?.onComplete === "function" ? handlerOrOpts.onComplete : null,
+        };
+
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${proto}//${location.host}/ws/jobs/${encodeURIComponent(jobId)}`;
   const pill = document.getElementById("active-job-pill");
@@ -77,39 +85,71 @@ export function connectJobStream(jobId, onEvent) {
   }
 
   let closedByTerminal = false;
+  let seenCount = 0;
+  let pollTimer = null;
+
+  function emitEvent(ev) {
+    callbacks.onEvent(ev);
+    if (ev.event === "job_complete" || ev.event === "job_failed") {
+      closedByTerminal = true;
+      if (pill) pill.classList.add("hidden");
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      if (callbacks.onComplete) callbacks.onComplete(ev);
+    }
+  }
+
+  function startFallbackPolling() {
+    if (closedByTerminal || pollTimer) return;
+    const pollOnce = async () => {
+      if (closedByTerminal) return;
+      try {
+        const job = await apiGet(`/api/jobs/${encodeURIComponent(jobId)}`);
+        const evs = job.events || [];
+        for (; seenCount < evs.length; seenCount++) {
+          emitEvent(evs[seenCount]);
+        }
+        if (!closedByTerminal && (job.status === "completed" || job.status === "failed")) {
+          emitEvent(
+            job.status === "completed"
+              ? { event: "job_complete", status: "completed", result: job.result }
+              : { event: "job_failed", status: "failed", error: job.error }
+          );
+        }
+      } catch (_) {}
+    };
+    pollOnce();
+    pollTimer = setInterval(pollOnce, 600);
+  }
+
   const ws = new WebSocket(wsUrl);
   ws.onmessage = (msg) => {
     try {
       const ev = JSON.parse(msg.data);
       if (ev.event === "snapshot") {
-        (ev.events || []).forEach(onEvent);
+        const snapEvents = ev.events || [];
+        seenCount = snapEvents.length;
+        snapEvents.forEach((item) => callbacks.onEvent(item));
         if (ev.status === "completed") {
-          closedByTerminal = true;
-          onEvent({ event: "job_complete", status: "completed", result: ev.result });
+          emitEvent({ event: "job_complete", status: "completed", result: ev.result });
         } else if (ev.status === "failed") {
-          closedByTerminal = true;
-          onEvent({ event: "job_failed", status: "failed", error: ev.error });
+          emitEvent({ event: "job_failed", status: "failed", error: ev.error });
         }
       } else {
-        onEvent(ev);
-        if (ev.event === "job_complete" || ev.event === "job_failed") {
-          closedByTerminal = true;
-          if (pill) pill.classList.add("hidden");
-        }
+        seenCount += 1;
+        emitEvent(ev);
       }
     } catch (_) {}
   };
-  ws.onerror = async () => {
-    if (!closedByTerminal) {
-      // Fallback polling if WS dropped
-      try {
-        const job = await apiGet(`/api/jobs/${encodeURIComponent(jobId)}`);
-        (job.events || []).forEach(onEvent);
-      } catch (_) {}
-    }
-  };
+  ws.onerror = () => startFallbackPolling();
   ws.onclose = () => {
-    if (pill) pill.classList.add("hidden");
+    if (!closedByTerminal) {
+      startFallbackPolling();
+    } else if (pill) {
+      pill.classList.add("hidden");
+    }
   };
   return ws;
 }

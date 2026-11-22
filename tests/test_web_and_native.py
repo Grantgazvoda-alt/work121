@@ -19,10 +19,14 @@ from websockets.exceptions import ConnectionClosedOK
 from websockets.sync.client import connect as ws_connect
 
 from agent_comm_robustness import (
+    AgentMessage,
     FramingMode,
     HardenedBoundaryGate,
     MessageEncoder,
     PayloadConfig,
+    Performative,
+    Provenance,
+    sign_observed_claim,
 )
 from backend_server import (
     NaiveBaselineJsonParser,
@@ -543,4 +547,175 @@ def test_one_tap_launcher_desktop_and_home_screen_shortcuts() -> None:
     ).is_file() or (
         onedrive_desktop / "work121 Workbench.lnk"
     ).is_file(), "Desktop shortcut must exist in Desktop or OneDrive Desktop"
+
+
+def test_python_and_native_signed_observed_without_sig_enforcement_and_32char_token():
+    binary = _find_native_binary()
+    assert binary is not None
+    cfg = PayloadConfig(framing=FramingMode.RAW, seed=42)
+    gate = HardenedBoundaryGate(
+        oracle_key=cfg.oracle_key,
+        framing=FramingMode.RAW,
+        require_signed_observed=False,
+        reject_special_tokens=True,
+    )
+
+    msg = AgentMessage(
+        msg_id="m-obs-signed-opt",
+        sender="oracle",
+        recipient="worker",
+        round_idx=1,
+        performative=Performative.PROPOSE,
+        claim="Verified deterministic output is 42",
+        answer=42,
+        confidence=1.0,
+        provenance=Provenance.OBSERVED,
+        constraints=["integer_only"],
+        evidence_refs=["oracle:unit"],
+    )
+    msg.oracle_sig = sign_observed_claim(msg, cfg.oracle_key)
+    raw_signed = json.dumps(msg.to_dict()).encode("utf-8")
+
+    py_signed = gate.parse_bytes(raw_signed)
+    assert py_signed.accepted is True
+    assert py_signed.error_code is None
+
+    proc_signed = subprocess.run(
+        [
+            str(binary),
+            "wire-check",
+            "--framing",
+            "raw",
+            "--require-signed-observed",
+            "false",
+            "--reject-special-tokens",
+            "true",
+            "--oracle-key",
+            cfg.oracle_key.decode("utf-8"),
+            "--stdin",
+            "--json",
+        ],
+        input=raw_signed,
+        capture_output=True,
+        timeout=5.0,
+        check=False,
+    )
+    native_signed = json.loads(proc_signed.stdout.decode("utf-8"))
+    assert native_signed["accepted"] is True
+    assert native_signed["error_code"] is None
+
+    tok_32 = "<|" + ("x" * 28) + "|>"
+    assert len(tok_32) == 32
+    msg_tok = AgentMessage(
+        msg_id="m-tok-32",
+        sender="attacker",
+        recipient="worker",
+        round_idx=1,
+        performative=Performative.PROPOSE,
+        claim=f"Injected {tok_32} boundary token",
+        answer=42,
+        confidence=0.9,
+        provenance=Provenance.DERIVED,
+        constraints=[],
+        evidence_refs=[],
+    )
+    raw_tok = json.dumps(msg_tok.to_dict()).encode("utf-8")
+
+    py_tok = gate.parse_bytes(raw_tok)
+    assert py_tok.accepted is False
+    assert py_tok.error_code == "special_token_delimiter"
+
+    proc_tok = subprocess.run(
+        [
+            str(binary),
+            "wire-check",
+            "--framing",
+            "raw",
+            "--require-signed-observed",
+            "false",
+            "--reject-special-tokens",
+            "true",
+            "--stdin",
+            "--json",
+        ],
+        input=raw_tok,
+        capture_output=True,
+        timeout=5.0,
+        check=False,
+    )
+    native_tok = json.loads(proc_tok.stdout.decode("utf-8"))
+    assert native_tok["accepted"] is False
+    assert native_tok["error_code"] == "special_token_delimiter"
+
+
+def test_backend_favicon_validation_and_unique_eval_runs(live_server: _LiveBackendHandle):
+    fav = live_server.get("/favicon.ico")
+    assert fav.status_code == 200
+    assert len(fav.content) > 0
+
+    bad_json = live_server.post(
+        "/api/eval/run",
+        data="{not-json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert bad_json.status_code == 400
+    assert "error" in bad_json.json()
+
+    non_obj = live_server.post("/api/wire/inspect", json=["not", "an", "object"])
+    assert non_obj.status_code == 400
+    assert "error" in non_obj.json()
+
+    unknown_agent = live_server.post(
+        "/api/eval/run",
+        json={"agent_keys": ["missing-agent@v999"], "suite_mode": "benign"},
+    )
+    assert unknown_agent.status_code == 404
+    assert "error" in unknown_agent.json()
+
+    partial_diff = live_server.post(
+        "/api/runs/diff",
+        json={"baseline_jsonl": "", "candidate_jsonl": ""},
+    )
+    assert partial_diff.status_code == 400
+    assert "error" in partial_diff.json()
+
+    bad_hex = live_server.post(
+        "/api/wire/inspect",
+        json={
+            "framing": "raw",
+            "raw_text": "hello",
+            "mutation": {
+                "kind": "replace_bytes",
+                "params": {"data": "zz-invalid-hex", "data_encoding": "hex"},
+            },
+        },
+    )
+    assert bad_hex.status_code == 400
+    assert "error" in bad_hex.json()
+
+    bad_limit = live_server.post(
+        "/api/wire/inspect",
+        json={"framing": "raw", "raw_text": "{}", "max_wire_bytes": 0},
+    )
+    assert bad_limit.status_code == 400
+
+    # Two rapid eval runs for the same agent must not collide or overwrite each other
+    r1 = live_server.post(
+        "/api/eval/run",
+        json={"agent_keys": ["policy-assistant@v2.0-hardened"], "suite_mode": "benign"},
+    ).json()
+    d1 = live_server.drain_ws_job(r1["job_id"])
+    assert d1["status"] == "completed"
+
+    r2 = live_server.post(
+        "/api/eval/run",
+        json={"agent_keys": ["policy-assistant@v2.0-hardened"], "suite_mode": "benign"},
+    ).json()
+    d2 = live_server.drain_ws_job(r2["job_id"])
+    assert d2["status"] == "completed"
+
+    runs_list = live_server.get("/api/runs").json()["runs"]
+    assert len(runs_list) >= 2
+    run_ids = [r["run_id"] for r in runs_list]
+    assert len(set(run_ids)) == len(run_ids)
 

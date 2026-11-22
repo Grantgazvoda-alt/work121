@@ -174,18 +174,13 @@ class DefensiveBoundaryValidator:
 
     def isolate_untrusted_context(self, untrusted_text: str) -> BoundaryAuditResult:
         """Wraps untrusted external data in structural tags and neutralizes tag-closing collisions."""
-        closing_tag = f"</{self._data_tag}>"
+        closing_re = re.compile(rf"</\s*{re.escape(self._data_tag)}\s*>", flags=re.IGNORECASE)
         findings: list[str] = []
-        cleaned = untrusted_text
+        cleaned = str(untrusted_text)
 
-        if closing_tag.lower() in cleaned.lower():
+        if closing_re.search(cleaned):
             findings.append("neutralized_embedded_closing_delimiter")
-            cleaned = re.sub(
-                re.escape(closing_tag),
-                "[ESCAPED_DELIMITER]",
-                cleaned,
-                flags=re.IGNORECASE,
-            )
+            cleaned = closing_re.sub("[ESCAPED_DELIMITER]", cleaned)
 
         wrapped = f"<{self._data_tag}>\n{cleaned}\n</{self._data_tag}>"
         return BoundaryAuditResult(
@@ -210,8 +205,10 @@ class DefensiveBoundaryValidator:
                     findings=("invalid_json_envelope",),
                     sanitized_payload="",
                 )
-        else:
+        elif isinstance(raw_message, Mapping):
             parsed = dict(raw_message)
+        else:
+            parsed = raw_message
 
         if not isinstance(parsed, dict):
             return BoundaryAuditResult(

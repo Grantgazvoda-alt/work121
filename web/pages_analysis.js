@@ -205,9 +205,10 @@ export async function renderSusceptibilityPage(root) {
 
     tbody.querySelectorAll("tr[data-rid]").forEach((tr) => {
       tr.addEventListener("click", async () => {
+        const rid = tr.dataset.rid;
+        activeRunId = rid;
         renderRunsTable();
-        await loadRunRecords(tr.dataset.rid);
-        renderRunsTable();
+        await loadRunRecords(rid);
       });
     });
 
@@ -745,11 +746,15 @@ export async function renderOwaspPage(root) {
   }
 
   document.getElementById("ow-run-filter").addEventListener("change", async (ev) => {
-    const rid = ev.target.value;
-    const url = rid ? `/api/owasp/audit?run_id=${encodeURIComponent(rid)}` : "/api/owasp/audit";
-    const res = await apiGet(url);
-    remediation = res.remediation || [];
-    renderRemediation();
+    try {
+      const rid = ev.target.value;
+      const url = rid ? `/api/owasp/audit?run_id=${encodeURIComponent(rid)}` : "/api/owasp/audit";
+      const res = await apiGet(url);
+      remediation = res.remediation || [];
+      renderRemediation();
+    } catch (err) {
+      toast(err.message, "err");
+    }
   });
 
   document.getElementById("btn-ow-validate").addEventListener("click", runValidation);

@@ -103,7 +103,7 @@ fn sha256_bytes(input: &[u8]) -> [u8; 32] {
         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
     ];
     let bit_len = (input.len() as u64).wrapping_mul(8);
-    let mut padded = Vec::with_capacity(((input.len() + 9 + 63) / 64) * 64);
+    let mut padded = Vec::with_capacity((input.len() + 9).div_ceil(64) * 64);
     padded.extend_from_slice(input);
     padded.push(0x80);
     while (padded.len() % 64) != 56 {
@@ -111,11 +111,12 @@ fn sha256_bytes(input: &[u8]) -> [u8; 32] {
     }
     padded.extend_from_slice(&bit_len.to_be_bytes());
 
-    for block in padded.chunks_exact(64) {
+    let (blocks, _) = padded.as_chunks::<64>();
+    for block in blocks {
         let mut w = [0u32; 64];
-        for i in 0..16 {
+        for (i, slot) in w.iter_mut().enumerate().take(16) {
             let j = i * 4;
-            w[i] = u32::from_be_bytes([block[j], block[j + 1], block[j + 2], block[j + 3]]);
+            *slot = u32::from_be_bytes([block[j], block[j + 1], block[j + 2], block[j + 3]]);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
@@ -210,11 +211,12 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 fn decode_hex(input: &str) -> Result<Vec<u8>, String> {
     let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
-    if cleaned.len() % 2 != 0 {
+    if !cleaned.len().is_multiple_of(2) {
         return Err("Hex input must have even length".to_string());
     }
     let mut out = Vec::with_capacity(cleaned.len() / 2);
-    for pair in cleaned.as_bytes().chunks_exact(2) {
+    let (pairs, _) = cleaned.as_bytes().as_chunks::<2>();
+    for pair in pairs {
         let s = std::str::from_utf8(pair).map_err(|_| "Invalid ASCII in hex")?;
         let byte = u8::from_str_radix(s, 16).map_err(|e| format!("Invalid hex byte '{s}': {e}"))?;
         out.push(byte);
@@ -726,8 +728,8 @@ fn has_special_token_delimiter(s: &str) -> bool {
     let mut i = 0;
     while i + 3 < bytes.len() {
         if bytes[i] == b'<' && bytes[i + 1] == b'|' {
-            let max_end = (i + 2 + 33).min(bytes.len());
-            for j in (i + 2)..max_end.saturating_sub(1) {
+            let max_end_excl = (i + 2 + 33).min(bytes.len().saturating_sub(1));
+            for j in (i + 2)..max_end_excl {
                 if bytes[j] == b'|' && bytes[j + 1] == b'>' {
                     if j - (i + 2) >= 1 && j - (i + 2) <= 32 {
                         return true;
@@ -1019,70 +1021,72 @@ fn parse_bytes(raw: &[u8], cfg: &GateConfig) -> ParseOutcome {
         _ => unreachable!(),
     };
 
-    if provenance == "observed" && cfg.require_signed_observed {
-        if cfg.oracle_key.is_empty() {
-            return reject("oracle_key_unconfigured", "oracle key is not configured");
-        }
-        let sig = match oracle_sig {
-            Some(s) if !s.is_empty() => s,
-            _ => return reject("missing_oracle_signature", "observed provenance requires oracle_sig"),
-        };
-        if !is_lower_hex64(sig) {
-            return reject(
-                "malformed_oracle_signature_format",
-                "oracle_sig must be a 64-char lowercase hex SHA-256 digest",
-            );
-        }
+    if provenance == "observed" {
+        if cfg.require_signed_observed || (oracle_sig.is_some() && !cfg.oracle_key.is_empty()) {
+            if cfg.oracle_key.is_empty() {
+                return reject("oracle_key_unconfigured", "oracle key is not configured");
+            }
+            let sig = match oracle_sig {
+                Some(s) if !s.is_empty() => s,
+                _ => return reject("missing_oracle_signature", "observed provenance requires oracle_sig"),
+            };
+            if !is_lower_hex64(sig) {
+                return reject(
+                    "malformed_oracle_signature_format",
+                    "oracle_sig must be a 64-char lowercase hex SHA-256 digest",
+                );
+            }
 
-        let constraints_vec = match constraints_ref {
-            Some(v) => v.clone(),
-            None => Vec::new(),
-        };
-        let canonical_obj = JsonValue::Object(vec![
-            (
-                JsonStr { text: "answer".to_string(), has_lone_surrogate: false },
-                answer_val.clone(),
-            ),
-            (
-                JsonStr { text: "answer_type".to_string(), has_lone_surrogate: false },
-                JsonValue::Str(JsonStr {
-                    text: python_type_name(answer_val).to_string(),
-                    has_lone_surrogate: false,
-                }),
-            ),
-            (
-                JsonStr { text: "claim".to_string(), has_lone_surrogate: false },
-                JsonValue::Str(JsonStr { text: claim.to_string(), has_lone_surrogate: false }),
-            ),
-            (
-                JsonStr { text: "constraints".to_string(), has_lone_surrogate: false },
-                JsonValue::Array(constraints_vec),
-            ),
-            (
-                JsonStr { text: "domain".to_string(), has_lone_surrogate: false },
-                JsonValue::Str(JsonStr {
-                    text: "agent-protocol-v1:observed".to_string(),
-                    has_lone_surrogate: false,
-                }),
-            ),
-            (
-                JsonStr { text: "msg_id".to_string(), has_lone_surrogate: false },
-                JsonValue::Str(JsonStr { text: msg_id.to_string(), has_lone_surrogate: false }),
-            ),
-            (
-                JsonStr { text: "provenance".to_string(), has_lone_surrogate: false },
-                JsonValue::Str(JsonStr { text: provenance.to_string(), has_lone_surrogate: false }),
-            ),
-            (
-                JsonStr { text: "round_idx".to_string(), has_lone_surrogate: false },
-                JsonValue::Int(round_idx),
-            ),
-        ]);
-        let mut canonical = String::new();
-        write_canonical_json(&canonical_obj, &mut canonical);
-        let expected_hex = hmac_sha256_hex(&cfg.oracle_key, canonical.as_bytes());
-        if !constant_time_eq(expected_hex.as_bytes(), sig.as_bytes()) {
-            return reject("invalid_oracle_signature", "HMAC signature verification failed");
+            let constraints_vec = match constraints_ref {
+                Some(v) => v.clone(),
+                None => Vec::new(),
+            };
+            let canonical_obj = JsonValue::Object(vec![
+                (
+                    JsonStr { text: "answer".to_string(), has_lone_surrogate: false },
+                    answer_val.clone(),
+                ),
+                (
+                    JsonStr { text: "answer_type".to_string(), has_lone_surrogate: false },
+                    JsonValue::Str(JsonStr {
+                        text: python_type_name(answer_val).to_string(),
+                        has_lone_surrogate: false,
+                    }),
+                ),
+                (
+                    JsonStr { text: "claim".to_string(), has_lone_surrogate: false },
+                    JsonValue::Str(JsonStr { text: claim.to_string(), has_lone_surrogate: false }),
+                ),
+                (
+                    JsonStr { text: "constraints".to_string(), has_lone_surrogate: false },
+                    JsonValue::Array(constraints_vec),
+                ),
+                (
+                    JsonStr { text: "domain".to_string(), has_lone_surrogate: false },
+                    JsonValue::Str(JsonStr {
+                        text: "agent-protocol-v1:observed".to_string(),
+                        has_lone_surrogate: false,
+                    }),
+                ),
+                (
+                    JsonStr { text: "msg_id".to_string(), has_lone_surrogate: false },
+                    JsonValue::Str(JsonStr { text: msg_id.to_string(), has_lone_surrogate: false }),
+                ),
+                (
+                    JsonStr { text: "provenance".to_string(), has_lone_surrogate: false },
+                    JsonValue::Str(JsonStr { text: provenance.to_string(), has_lone_surrogate: false }),
+                ),
+                (
+                    JsonStr { text: "round_idx".to_string(), has_lone_surrogate: false },
+                    JsonValue::Int(round_idx),
+                ),
+            ]);
+            let mut canonical = String::new();
+            write_canonical_json(&canonical_obj, &mut canonical);
+            let expected_hex = hmac_sha256_hex(&cfg.oracle_key, canonical.as_bytes());
+            if !constant_time_eq(expected_hex.as_bytes(), sig.as_bytes()) {
+                return reject("invalid_oracle_signature", "HMAC signature verification failed");
+            }
         }
     } else if oracle_sig.is_some() {
         return reject(
@@ -1151,7 +1155,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     if clean.is_empty() {
         return Ok(Vec::new());
     }
-    if clean.len() % 4 != 0 {
+    if !clean.len().is_multiple_of(4) {
         return Err("Invalid base64 length".to_string());
     }
     let val = |b: u8| -> Result<u8, String> {
@@ -1165,7 +1169,8 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
         }
     };
     let mut out = Vec::with_capacity((clean.len() / 4) * 3);
-    for chunk in clean.chunks_exact(4) {
+    let (chunks, _) = clean.as_chunks::<4>();
+    for chunk in chunks {
         let a = val(chunk[0])?;
         let b = val(chunk[1])?;
         if chunk[2] == b'=' {
@@ -1404,7 +1409,7 @@ fn cmd_wire_check_or_batch(subcmd: &str, args: &[String]) -> i32 {
                 Err((_, e)) => { eprintln!("Invalid JSON batch array: {e}"); return 2; }
             };
             if let JsonValue::Array(items) = val {
-                for item in items {
+                for (idx, item) in items.into_iter().enumerate() {
                     let mut case_id_opt: Option<String> = None;
                     let mut raw_bytes_opt: Option<Vec<u8>> = None;
                     if let JsonValue::Object(map) = item {
@@ -1413,30 +1418,50 @@ fn cmd_wire_check_or_batch(subcmd: &str, args: &[String]) -> i32 {
                                 if let JsonValue::Str(s) = v { case_id_opt = Some(s.text); }
                             } else if k.text == "raw_hex" {
                                 if let JsonValue::Str(s) = v {
-                                    raw_bytes_opt = decode_hex(&s.text).ok();
+                                    match decode_hex(&s.text) {
+                                        Ok(b) => raw_bytes_opt = Some(b),
+                                        Err(e) => {
+                                            eprintln!("Invalid raw_hex at batch index {idx}: {e}");
+                                            return 2;
+                                        }
+                                    }
                                 }
                             } else if k.text == "raw_b64" {
                                 if let JsonValue::Str(s) = v {
-                                    raw_bytes_opt = base64_decode(&s.text).ok();
+                                    match base64_decode(&s.text) {
+                                        Ok(b) => raw_bytes_opt = Some(b),
+                                        Err(e) => {
+                                            eprintln!("Invalid raw_b64 at batch index {idx}: {e}");
+                                            return 2;
+                                        }
+                                    }
                                 }
                             }
                         }
+                    } else {
+                        eprintln!("Batch item at index {idx} must be a JSON object");
+                        return 2;
                     }
-                    if let Some(raw) = raw_bytes_opt {
-                        let t0 = Instant::now();
-                        let outcome = parse_bytes(&raw, &cfg);
-                        let elapsed_us = t0.elapsed().as_secs_f64() * 1_000_000.0;
-                        let outcome_json = outcome_to_json(&raw, &cfg, &outcome, elapsed_us);
-                        let full_json = if let Some(cid) = case_id_opt {
-                            let mut escaped_cid = String::new();
-                            write_json_escaped_ascii(&cid, &mut escaped_cid);
-                            format!("{{\"case_id\":{},{}", escaped_cid, &outcome_json[1..])
-                        } else {
-                            outcome_json
-                        };
-                        results.push(full_json);
-                    }
+                    let Some(raw) = raw_bytes_opt else {
+                        eprintln!("Batch item at index {idx} missing raw_hex or raw_b64");
+                        return 2;
+                    };
+                    let t0 = Instant::now();
+                    let outcome = parse_bytes(&raw, &cfg);
+                    let elapsed_us = t0.elapsed().as_secs_f64() * 1_000_000.0;
+                    let outcome_json = outcome_to_json(&raw, &cfg, &outcome, elapsed_us);
+                    let full_json = if let Some(cid) = case_id_opt {
+                        let mut escaped_cid = String::new();
+                        write_json_escaped_ascii(&cid, &mut escaped_cid);
+                        format!("{{\"case_id\":{},{}", escaped_cid, &outcome_json[1..])
+                    } else {
+                        outcome_json
+                    };
+                    results.push(full_json);
                 }
+            } else {
+                eprintln!("JSON batch root must be an array");
+                return 2;
             }
         } else {
             for line in buf.split_terminator('\n') {
@@ -1827,8 +1852,10 @@ mod tests {
 
     #[test]
     fn test_length_prefixed_positive_derived() {
-        let mut cfg = GateConfig::default();
-        cfg.framing = FramingMode::LengthPrefixed;
+        let cfg = GateConfig {
+            framing: FramingMode::LengthPrefixed,
+            ..Default::default()
+        };
         let body = br#"{"answer":42,"claim":"Derived result is 42","confidence":0.75,"constraints":["integer_only"],"evidence_refs":["step-1"],"msg_id":"msg-drv-001","oracle_sig":null,"performative":"propose","provenance":"derived","recipient":"model_b","round_idx":0,"sender":"model_a"}"#;
         let mut framed = (body.len() as u32).to_be_bytes().to_vec();
         framed.extend_from_slice(body);

@@ -226,9 +226,9 @@ export async function renderOverviewPage(root, appState) {
     btn.disabled = true;
     try {
       const res = await apiPost("/api/onetap/shortcut", {});
-      toast("Pinned 'work121 One-Tap Launch' with custom artwork to your Desktop!", "ok");
+      toast("Pinned 'work121 One-Tap Launch' with custom artwork to your Desktop & Home Screen!", "ok");
       if (res.output) {
-        openModal("Desktop One-Tap Shortcut Installed", `<pre class="code-box">${esc(res.output)}</pre>`);
+        openModal("Desktop & Home Screen Shortcut Installed", `<pre class="code-box">${esc(res.output)}</pre>`);
       }
     } catch (err) {
       toast(err.message, "err");
@@ -240,6 +240,7 @@ export async function renderOverviewPage(root, appState) {
   document.getElementById("btn-onetap-launch").addEventListener("click", async (ev) => {
     const btn = ev.currentTarget;
     btn.disabled = true;
+    let activeStage = 1;
     const setStage = (num, stateClass, badgeText, badgeKind, subText) => {
       const st = document.getElementById(`ot-stage-${num}`);
       const bd = document.getElementById(`ot-badge-${num}`);
@@ -254,6 +255,7 @@ export async function renderOverviewPage(root, appState) {
 
     try {
       // Stage 1: Native Rust + Python Wire Gate Parity
+      activeStage = 1;
       setStage(1, "active", "RUNNING", "info", "Validating length-prefixed wire suite...");
       const wireRes = await apiPost("/api/wire/suite/run", {
         framing: "length_prefixed",
@@ -272,10 +274,16 @@ export async function renderOverviewPage(root, appState) {
       );
 
       // Stage 2: 2-Hop Multi-Agent Relay Ablation
+      activeStage = 2;
       setStage(2, "active", "RUNNING", "info", "Executing 2-hop relay ablation...");
       const scRes = await apiGet("/api/relay/scenarios");
-      const firstScenario = scRes.scenarios?.[0]?.scenario_id || "relay_01_rag_to_executor";
-      const targetKey = agents.find((a) => a.agent_key.includes("hardened"))?.agent_key || agents[0]?.agent_key || "policy-assistant@v2.0-hardened";
+      const firstScenario = scRes.scenarios?.[0]?.scenario_id || "RELAY-01-TELEMETRY-AUDIT";
+      const simAgents = agents.filter((a) => a.kind === "simulated");
+      const targetKey =
+        simAgents.find((a) => a.agent_key.includes("hardened"))?.agent_key ||
+        simAgents[0]?.agent_key ||
+        agents[0]?.agent_key ||
+        "policy-assistant@v2.0-hardened";
       const relayRes = await apiPost("/api/relay/run", {
         scenario_id: firstScenario,
         agent_a_key: targetKey,
@@ -287,8 +295,10 @@ export async function renderOverviewPage(root, appState) {
       setStage(2, "done", "ABLATED", "ok", `${relayRes.results.length} traces (unprotected vs defended)`);
 
       // Stage 3: Live Evaluation Suite over WebSocket
+      activeStage = 3;
       setStage(3, "active", "STREAMING", "info", "Starting evaluation run...");
-      const evalKeys = agents.slice(0, 2).map((a) => a.agent_key);
+      const evalPool = simAgents.length ? simAgents : agents;
+      const evalKeys = evalPool.slice(0, 2).map((a) => a.agent_key);
       const evalStart = await apiPost("/api/eval/run", {
         agent_keys: evalKeys.length ? evalKeys : ["policy-assistant@v2.0-hardened"],
         suite_mode: "benign",
@@ -317,6 +327,7 @@ export async function renderOverviewPage(root, appState) {
       });
 
       // Stage 4: OWASP LLM Top 10 Remediation Audit
+      activeStage = 4;
       setStage(4, "active", "AUDITING", "info", "Computing OWASP LLM Top 10 tiers...");
       const owaspRes = await apiGet("/api/owasp/audit");
       setStage(4, "done", "VERIFIED", "ok", `${(owaspRes.remediation || []).length} OWASP profile(s) audited`);
@@ -324,6 +335,8 @@ export async function renderOverviewPage(root, appState) {
       await appState.refreshStatus();
       toast("One-Tap Full Suite Launch completed across all 4 stages!", "ok");
     } catch (err) {
+      appState.setActiveJob(null);
+      setStage(activeStage, "", "ERROR", "bad", err.message || "Stage failed");
       toast(err.message, "err");
     } finally {
       btn.disabled = false;
@@ -474,9 +487,13 @@ export async function renderOverviewPage(root, appState) {
   });
 
   document.getElementById("ov-refresh-jobs").addEventListener("click", async () => {
-    const jr = await apiGet("/api/jobs");
-    currentJobs = jr.jobs || [];
-    renderJobsTable();
+    try {
+      const jr = await apiGet("/api/jobs");
+      currentJobs = jr.jobs || [];
+      renderJobsTable();
+    } catch (err) {
+      toast(err.message, "err");
+    }
   });
 
   renderAgentsTable();
@@ -653,12 +670,12 @@ export async function renderConfigureRunPage(root, appState) {
     </div>
   `;
 
-  function populateTemplates() {
+  async function populateTemplates() {
     const cat = document.getElementById("cfg-cat").value;
     const filtered = templates.filter((t) => t.category === cat);
     const sel = document.getElementById("cfg-tpl");
     sel.innerHTML = filtered.map((t) => `<option value="${esc(t.template_id)}">${esc(t.name)} (${esc(t.template_id)})</option>`).join("");
-    renderParamInputs();
+    await renderParamInputs();
   }
 
   async function renderParamInputs() {
@@ -766,6 +783,7 @@ export async function renderConfigureRunPage(root, appState) {
     const pg = paginate(streamRows, streamPage, pageSize);
     streamPage = pg.page;
     const tbody = document.getElementById("run-stream-body");
+    if (!tbody) return;
     tbody.innerHTML = pg.slice.map((r) => `
       <tr>
         <td><code>${esc(r.agent_key)}</code></td>
@@ -874,29 +892,34 @@ export async function renderConfigureRunPage(root, appState) {
       toast(`Started evaluation job ${start.job_id} (${start.total_cases} case(s)).`, "info");
 
       connectJobStream(start.job_id, async (ev) => {
+        const fillEl = document.getElementById("run-progress-fill");
+        const lblEl = document.getElementById("run-progress-label");
         if (ev.event === "case_complete") {
           streamRows.unshift(ev);
+          if (!fillEl || !lblEl) return;
           const pct = Math.min(100, Math.round((ev.completed / Math.max(1, ev.total)) * 100));
-          document.getElementById("run-progress-fill").style.width = `${pct}%`;
-          document.getElementById("run-progress-label").textContent =
-            `[${ev.agent_key}] ${ev.completed}/${ev.total} (${pct}%): ${ev.test_case_id}`;
+          fillEl.style.width = `${pct}%`;
+          lblEl.textContent = `[${ev.agent_key}] ${ev.completed}/${ev.total} (${pct}%): ${ev.test_case_id}`;
           renderStream();
         } else if (ev.event === "job_complete") {
-          btn.disabled = false;
-          document.getElementById("run-progress-fill").style.width = "100%";
+          if (btn) btn.disabled = false;
+          if (fillEl) fillEl.style.width = "100%";
           const runCount = ev.result?.runs?.length || agentKeys.length;
-          document.getElementById("run-progress-label").textContent =
-            `Completed ${ev.result?.total_completed || streamRows.length} evaluations across ${runCount} run(s). Saved to eval_runs/.`;
+          if (lblEl) {
+            lblEl.textContent =
+              `Completed ${ev.result?.total_completed || streamRows.length} evaluations across ${runCount} run(s). Saved to eval_runs/.`;
+          }
           toast(`Evaluation job complete! ${runCount} JSONL file(s) saved.`, "ok");
           await appState.refreshStatus();
         } else if (ev.event === "job_failed") {
-          btn.disabled = false;
-          document.getElementById("run-progress-label").textContent = `Job failed: ${ev.error}`;
+          if (btn) btn.disabled = false;
+          if (lblEl) lblEl.textContent = `Job failed: ${ev.error}`;
           toast(`Evaluation failed: ${ev.error}`, "err");
         }
       });
     } catch (err) {
-      document.getElementById("btn-launch-eval").disabled = false;
+      const btnEl = document.getElementById("btn-launch-eval");
+      if (btnEl) btnEl.disabled = false;
       toast(err.message, "err");
     }
   });
@@ -1323,29 +1346,36 @@ export async function renderHamsterWheelPage(root, appState) {
       });
 
       connectJobStream(start.job_id, async (ev) => {
+        const statusEl = document.getElementById("wh-status-text");
         if (ev.event === "cycle_start") {
-          document.getElementById("wh-status-text").textContent =
-            `Revolution ${ev.revolution}/${ev.total_revolutions} (${ev.protocol}) — ${ev.cases_in_cycle} cases`;
+          if (statusEl) {
+            statusEl.textContent =
+              `Revolution ${ev.revolution}/${ev.total_revolutions} (${ev.protocol}) — ${ev.cases_in_cycle} cases`;
+          }
         } else if (ev.event === "case_complete") {
           streamEvents.unshift(ev);
-          document.getElementById("wh-status-text").textContent =
-            `Rev ${ev.revolution}/${ev.total_revolutions}: ${ev.case_index}/${ev.cases_in_cycle} (${ev.test_case_id})`;
-          renderStream();
+          if (statusEl) {
+            statusEl.textContent =
+              `Rev ${ev.revolution}/${ev.total_revolutions}: ${ev.case_index}/${ev.cases_in_cycle} (${ev.test_case_id})`;
+          }
+          if (document.getElementById("wh-stream-body")) renderStream();
         } else if (ev.event === "job_complete") {
           btn.disabled = false;
           selectedReport = ev.result;
-          document.getElementById("wh-status-text").textContent =
-            `Finished: Verdict ${selectedReport.admission_verdict} (${selectedReport.total_cases_executed} cases)`;
-          renderReportDetail(selectedReport);
+          if (statusEl) {
+            statusEl.textContent =
+              `Finished: Verdict ${selectedReport.admission_verdict} (${selectedReport.total_cases_executed} cases)`;
+          }
+          if (document.getElementById("wh-report-detail")) renderReportDetail(selectedReport);
           const refreshed = await apiGet("/api/wheel/reports");
           reports = refreshed.reports || [];
           reportPage = 1;
-          renderReportsTable();
+          if (document.getElementById("wh-reports-body")) renderReportsTable();
           await appState.refreshStatus();
           toast(`Hamster Wheel verdict: ${selectedReport.admission_verdict}`, selectedReport.admission_verdict === "ADMIT" ? "ok" : "err");
         } else if (ev.event === "job_failed") {
           btn.disabled = false;
-          document.getElementById("wh-status-text").textContent = `Failed: ${ev.error}`;
+          if (statusEl) statusEl.textContent = `Failed: ${ev.error}`;
           toast(ev.error, "err");
         }
       });

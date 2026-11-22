@@ -4,7 +4,6 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import sys
 from typing import Optional
 
 from eval_runner import AgentRegistry, TargetAgent, execute_evaluation_run
@@ -16,12 +15,18 @@ from indirect_input_classifier import (
 from live_adapters import (
     EmbeddingAlignmentScorer,
     HybridSemanticJudge,
-    IndirectInvariantJudge,
     LiveHttpAgent,
     LiveLlmSemanticJudge,
     LiveProviderConfig,
     ProviderKind,
     list_ollama_models,
+    resolve_api_key,
+)
+from live_providers import (
+    LiveHttpAgent as ProviderHttpAgent,
+    PROVIDER_CHOICES as LIVE_PROVIDER_CHOICES,
+    discover_live_agents as discover_provider_specs,
+    resolve_spec as resolve_provider_spec,
 )
 from regression_tracker import JsonlRunStore, RegressionComparator
 from report_generator import EmpiricalReportGenerator
@@ -35,9 +40,14 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="run_live_eval",
         description="Run live cross-architecture indirect-input evaluations and export academic artifacts.",
     )
+    provider_choices = list(
+        dict.fromkeys(
+            ["ollama", "openai_compatible", "anthropic", "gemini", "simulated", *LIVE_PROVIDER_CHOICES]
+        )
+    )
     parser.add_argument(
         "--provider",
-        choices=["ollama", "openai_compatible", "anthropic", "gemini", "simulated"],
+        choices=provider_choices,
         default="ollama",
         help="Target model provider (default: ollama).",
     )
@@ -86,6 +96,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional subset of template IDs to execute.",
     )
     parser.add_argument(
+        "--template-id",
+        default="",
+        help="Single BenignTemplateLibrary template ID to run with paired baseline control.",
+    )
+    parser.add_argument(
         "--paired",
         action="store_true",
         help="Include clean paired baseline controls to compute paired_regression_rate.",
@@ -100,6 +115,11 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["hybrid", "policy_anchor", "heuristic"],
         default="hybrid",
         help="Judge backend: hybrid (invariants + optional LLM + PolicyAnchor), policy_anchor (offline deterministic), or heuristic.",
+    )
+    parser.add_argument(
+        "--output",
+        default="",
+        help="Optional explicit JSONL output file path.",
     )
     parser.add_argument(
         "--output-dir",
@@ -120,6 +140,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--generate-report",
         default="",
         help="Generate live empirical Markdown + LaTeX paper report from --output-dir into the given directory and exit.",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List discovered live provider specifications as JSON and exit.",
     )
     parser.add_argument(
         "--list-ollama",
@@ -202,9 +227,49 @@ def _resolve_agent(args: argparse.Namespace) -> TargetAgent:
     return agent
 
 
+def _run_benign_provider_cli(args: argparse.Namespace) -> int:
+    benign_lib = BenignTemplateLibrary()
+    if args.template_id:
+        cases = [benign_lib.get(args.template_id).render()]
+    elif args.templates:
+        cases = [benign_lib.get(tid).render() for tid in args.templates]
+    else:
+        cases = [tpl.render() for tpl in benign_lib.list_templates()]
+
+    if args.provider == "simulated":
+        agent: TargetAgent = _resolve_agent(args)
+    else:
+        spec = resolve_provider_spec(
+            args.provider,
+            model=args.model.strip() or None,
+            base_url=args.base_url.strip() or None,
+        )
+        agent = ProviderHttpAgent(spec, timeout=args.timeout)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_model = agent.model_id.replace("/", "_").replace(":", "_")
+    run_id = f"{safe_model}-{agent.model_version}-{timestamp}"
+    result = execute_evaluation_run(
+        run_id=run_id,
+        agent=agent,
+        test_cases=cases,
+        library=benign_lib,
+    )
+    out_path = Path(args.output) if args.output else Path(args.output_dir) / f"{run_id}.jsonl"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    JsonlRunStore().write_records(out_path, result.records, append=False)
+    print(f"[done] Saved {len(result.records)} JSONL records to {out_path}")
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.list:
+        specs = discover_provider_specs(timeout=min(float(args.timeout), 1.0))
+        print(json.dumps([spec.to_dict() for spec in specs], indent=2))
+        return 0
 
     if args.list_ollama:
         models = list_ollama_models(args.base_url or "http://127.0.0.1:11434")
@@ -214,6 +279,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         for name in models:
             print(name)
         return 0
+
+    if args.template_id or args.output or args.provider not in {
+        "ollama",
+        "openai_compatible",
+        "anthropic",
+        "gemini",
+        "simulated",
+    }:
+        return _run_benign_provider_cli(args)
 
     library: IndirectInputClassifier = build_default_template_library()
 

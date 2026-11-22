@@ -1,4 +1,4 @@
-import { apiGet, apiPost, closeModal, toast } from "./api.js";
+import { apiGet, apiPost, closeModal, esc, toast } from "./api.js";
 import {
   renderMcpPage,
   renderTaxonomyPage,
@@ -78,6 +78,18 @@ const appState = {
   queuedBenign: [],
   queuedIndirect: [],
   lastOverview: null,
+  setActiveJob(jobId, text = "") {
+    const pill = document.getElementById("active-job-pill");
+    const label = document.getElementById("active-job-label");
+    if (!pill || !label) return;
+    if (jobId) {
+      pill.classList.remove("hidden");
+      label.textContent = text || `Job ${jobId}`;
+    } else {
+      pill.classList.add("hidden");
+      label.textContent = "";
+    }
+  },
   navigate(route) {
     if (!ROUTES[route]) route = "overview";
     location.hash = `#/${route}`;
@@ -126,13 +138,13 @@ async function renderCurrentRoute() {
   });
 
   const root = document.getElementById("page-root");
-  root.innerHTML = `<div class="loading-box">Loading ${cfg.title}...</div>`;
+  root.innerHTML = `<div class="loading-box">Loading ${esc(cfg.title)}...</div>`;
 
   try {
     await cfg.render(root, appState);
   } catch (err) {
     if (seq !== renderSeq) return;
-    root.innerHTML = `<div class="card"><h3 class="card-title">Failed to load ${cfg.title}</h3><p class="card-sub mt-12">${err.message}</p></div>`;
+    root.innerHTML = `<div class="card"><h3 class="card-title">Failed to load ${esc(cfg.title)}</h3><p class="card-sub mt-12">${esc(err.message)}</p></div>`;
     toast(err.message, "err");
   }
 }

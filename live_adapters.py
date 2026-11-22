@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import requests
 
-from eval_runner import AgentResponse
+from eval_runner import AgentResponse, TargetAgent
 from regression_tracker import ResponseTokenMetadata
 from response_classifier import (
     EvaluationTranscript,
@@ -530,7 +530,9 @@ class LiveHttpAgent:
             headers=headers,
             payload=payload,
         )
-        text = str(data["choices"][0]["message"].get("content") or "")
+        choices = data.get("choices") or []
+        first_msg = choices[0].get("message", {}) if (choices and isinstance(choices[0], dict)) else {}
+        text = str(first_msg.get("content") or "")
         usage = data.get("usage", {})
         return (
             text,
@@ -605,8 +607,8 @@ class LiveHttpAgent:
             },
             payload=payload,
         )
-        candidates = data.get("candidates", [])
-        parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+        candidates = data.get("candidates") or []
+        parts = candidates[0].get("content", {}).get("parts", []) if (candidates and isinstance(candidates[0], dict)) else []
         text = "\n".join(str(p.get("text", "")) for p in parts if isinstance(p, dict) and "text" in p)
         usage = data.get("usageMetadata", {})
         return (
@@ -715,10 +717,9 @@ class LiveHttpAgent:
             for item in candidates:
                 if not isinstance(item, dict):
                     continue
-                if "tool_call" in item and isinstance(item["tool_call"], dict):
-                    item = item["tool_call"]
-                name = item.get("name")
-                args = item.get("arguments", item.get("args", item.get("parameters")))
+                call_obj = item["tool_call"] if ("tool_call" in item and isinstance(item["tool_call"], dict)) else item
+                name = call_obj.get("name")
+                args = call_obj.get("arguments", call_obj.get("args", call_obj.get("parameters")))
                 if isinstance(name, str) and name in known_tool_names and isinstance(args, dict):
                     extracted.append({"function": {"name": name, "arguments": args}})
             if extracted:
@@ -859,7 +860,8 @@ class LiveHttpAgent:
             usage = data.get("usage", {})
             p_tok += int(usage.get("prompt_tokens", 0))
             c_tok += int(usage.get("completion_tokens", 0))
-            msg = data["choices"][0]["message"]
+            choices = data.get("choices") or []
+            msg = choices[0].get("message", {}) if (choices and isinstance(choices[0], dict)) else {}
             tool_calls = msg.get("tool_calls") or []
             messages.append(msg)
 
@@ -988,7 +990,8 @@ class LiveHttpAgent:
             usage = data.get("usageMetadata", {})
             p_tok += int(usage.get("promptTokenCount", 0))
             c_tok += int(usage.get("candidatesTokenCount", 0))
-            cand_content = data.get("candidates", [{}])[0].get("content", {})
+            candidates = data.get("candidates") or []
+            cand_content = candidates[0].get("content", {}) if (candidates and isinstance(candidates[0], dict)) else {}
             parts = cand_content.get("parts", [])
             contents.append({"role": "model", "parts": parts})
 
@@ -1075,7 +1078,11 @@ class LiveHttpAgent:
                     "max_tokens": self._config.max_tokens,
                 },
             )
-            text = str(data["choices"][0]["message"].get("content") or "")
+            choices = data.get("choices") or []
+            if not choices:
+                raise RuntimeError(f"OpenAI-compatible multimodal API returned empty choices: {data}")
+            message = choices[0].get("message") if isinstance(choices[0], dict) else {}
+            text = str((message or {}).get("content") or "")
             usage = data.get("usage", {})
             p_tok, c_tok = int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
         elif provider == ProviderKind.ANTHROPIC:
@@ -1140,7 +1147,11 @@ class LiveHttpAgent:
                     },
                 },
             )
-            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            candidates = data.get("candidates") or []
+            if not candidates:
+                raise RuntimeError(f"Gemini multimodal API returned empty candidates: {data}")
+            first_candidate = candidates[0] if isinstance(candidates[0], dict) else {}
+            parts = first_candidate.get("content", {}).get("parts", [])
             text = "\n".join(str(p.get("text", "")) for p in parts if isinstance(p, dict) and "text" in p)
             usage = data.get("usageMetadata", {})
             p_tok, c_tok = int(usage.get("promptTokenCount", 0)), int(usage.get("candidatesTokenCount", 0))
@@ -1322,8 +1333,7 @@ class IndirectInvariantJudge:
 
     @classmethod
     def _strip_reasoning(cls, text: str) -> str:
-        stripped = cls._THINK_TAG_RE.sub("", text).strip()
-        return stripped
+        return cls._THINK_TAG_RE.sub("", text).strip()
 
     @classmethod
     def _extract_json(cls, text: str) -> Optional[Any]:
