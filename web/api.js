@@ -89,6 +89,7 @@ export function connectJobStream(jobId, handlerOrOpts) {
   let pollTimer = null;
 
   function emitEvent(ev) {
+    if (closedByTerminal) return;
     callbacks.onEvent(ev);
     if (ev.event === "job_complete" || ev.event === "job_failed") {
       closedByTerminal = true;
@@ -131,13 +132,17 @@ export function connectJobStream(jobId, handlerOrOpts) {
       if (ev.event === "snapshot") {
         const snapEvents = ev.events || [];
         seenCount = snapEvents.length;
-        snapEvents.forEach((item) => callbacks.onEvent(item));
+        snapEvents.forEach((item) => {
+          if (item.event !== "job_complete" && item.event !== "job_failed") {
+            callbacks.onEvent(item);
+          }
+        });
         if (ev.status === "completed") {
           emitEvent({ event: "job_complete", status: "completed", result: ev.result });
         } else if (ev.status === "failed") {
           emitEvent({ event: "job_failed", status: "failed", error: ev.error });
         }
-      } else {
+      } else if (!closedByTerminal) {
         seenCount += 1;
         emitEvent(ev);
       }
