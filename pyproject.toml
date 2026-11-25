@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 work122 = [
-    "agent-comm-robustness @ git+https://github.com/Grantgazvoda-alt/work122.git@86b3509eee32a1ddb85ac36eecd1bb913952fa92",
+    "agent-comm-robustness @ git+https://github.com/Grantgazvoda-alt/work122.git@2c2e7a3565d581354ff4da6f019a220ed6967689",
 ]
 ui = [
     "streamlit>=1.38.0",

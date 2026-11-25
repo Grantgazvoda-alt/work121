@@ -42,7 +42,7 @@ def test_wire_suite_loads_installed_work122_distribution() -> None:
     origin = wire_suite.suite_origin()
     repo_copy = (Path(__file__).resolve().parents[1] / "agent_comm_robustness" / "__init__.py").resolve()
 
-    assert wire_suite.GIT_PIN == "86b3509eee32a1ddb85ac36eecd1bb913952fa92"
+    assert wire_suite.GIT_PIN == "2c2e7a3565d581354ff4da6f019a220ed6967689"
     assert wire_suite.suite_version() == "0.2.0"
     for core_export in wire_suite._REQUIRED_EXPORTS:
         assert hasattr(suite, core_export), f"Missing core export: {core_export}"
