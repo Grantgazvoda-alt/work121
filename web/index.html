@@ -9,7 +9,7 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="brand">
         <div class="brand-mark"><img src="/assets/hero_artwork.png" alt="W121" class="brand-art" /></div>
         <div>
@@ -18,35 +18,40 @@
         </div>
       </div>
 
-      <nav class="nav-list" id="nav-list">
-        <a href="#/overview" class="nav-item" data-route="overview">
+      <nav class="nav-list" id="nav-list" aria-label="Primary sections">
+        <div class="nav-section-label">Start Here</div>
+        <a href="#/overview" class="nav-item" data-route="overview" title="Dashboard, one-tap full check, and live LLM registration">
           <span class="nav-dot"></span><span>Overview &amp; Telemetry</span>
         </a>
-        <a href="#/wire-lab" class="nav-item" data-route="wire-lab">
-          <span class="nav-dot"></span><span>Wire Framing &amp; Hex Lab</span>
-        </a>
-        <a href="#/configure-run" class="nav-item" data-route="configure-run">
+        <a href="#/configure-run" class="nav-item" data-route="configure-run" title="Build and run custom benign + prompt-injection evaluation suites">
           <span class="nav-dot"></span><span>Eval Suite &amp; Runner</span>
         </a>
-        <a href="#/taxonomy" class="nav-item" data-route="taxonomy">
+
+        <div class="nav-section-label">Test &amp; Protocol Labs</div>
+        <a href="#/wire-lab" class="nav-item" data-route="wire-lab" title="Test raw, length-prefixed, and NDJSON frames against Rust/Python wire gates">
+          <span class="nav-dot"></span><span>Wire Framing &amp; Hex Lab</span>
+        </a>
+        <a href="#/taxonomy" class="nav-item" data-route="taxonomy" title="Inspect 9 indirect prompt-injection probes across 5 LLM wire formats">
           <span class="nav-dot"></span><span>Indirect Taxonomy &amp; Wire</span>
         </a>
-        <a href="#/mcp-multimodal" class="nav-item" data-route="mcp-multimodal">
+        <a href="#/mcp-multimodal" class="nav-item" data-route="mcp-multimodal" title="Exercise live 9-tool JSON-RPC 2.0 loops, Pillow PNG probes, and BM25 corpus">
           <span class="nav-dot"></span><span>MCP Tools &amp; Multimodal</span>
         </a>
-        <a href="#/relay-lab" class="nav-item" data-route="relay-lab">
+        <a href="#/relay-lab" class="nav-item" data-route="relay-lab" title="Compare unprotected vs defended 2-hop Agent-A to Agent-B handoffs">
           <span class="nav-dot"></span><span>2-Hop Relay Lab</span>
         </a>
-        <a href="#/hamster-wheel" class="nav-item" data-route="hamster-wheel">
+        <a href="#/hamster-wheel" class="nav-item" data-route="hamster-wheel" title="Run continuous multi-cycle regression gating for ADMIT or BLOCK decisions">
           <span class="nav-dot"></span><span>Hamster Wheel Gauntlet</span>
         </a>
-        <a href="#/susceptibility" class="nav-item" data-route="susceptibility">
+
+        <div class="nav-section-label">Results &amp; Compliance</div>
+        <a href="#/susceptibility" class="nav-item" data-route="susceptibility" title="Inspect attack heatmaps, Wilson 95% CIs, exact Fisher/McNemar tests, and exports">
           <span class="nav-dot"></span><span>Susceptibility &amp; Stats</span>
         </a>
-        <a href="#/regression-diff" class="nav-item" data-route="regression-diff">
+        <a href="#/regression-diff" class="nav-item" data-route="regression-diff" title="Compare two saved model runs or uploaded JSONL artifacts">
           <span class="nav-dot"></span><span>Version Regression Diff</span>
         </a>
-        <a href="#/owasp" class="nav-item" data-route="owasp">
+        <a href="#/owasp" class="nav-item" data-route="owasp" title="View OWASP LLM01/LLM07/LLM08 posture and test boundary validation live">
           <span class="nav-dot"></span><span>OWASP Audit &amp; Sandbox</span>
         </a>
       </nav>
@@ -73,7 +78,10 @@
     <div class="main-wrap">
       <header class="topbar">
         <div class="topbar-left">
-          <h1 id="page-title">Overview &amp; Telemetry</h1>
+          <div class="topbar-title-row">
+            <button class="btn btn-ghost btn-sm nav-toggle" id="btn-nav-toggle" type="button" aria-expanded="false" aria-controls="nav-list">Menu</button>
+            <h1 id="page-title">Overview &amp; Telemetry</h1>
+          </div>
           <span class="topbar-subtitle" id="page-subtitle">Unified backend, wire parser, MCP runtime, and evaluation workbench</span>
         </div>
         <div class="topbar-right">
@@ -81,6 +89,7 @@
             <span class="pulse-dot"></span>
             <span id="active-job-label">Running job...</span>
           </div>
+          <button class="btn btn-ghost btn-sm" id="btn-quick-help" type="button" title="Open plain-English workflow guide and glossary">? Quick Guide</button>
           <a class="btn btn-ghost btn-sm" href="/health" target="_blank" rel="noopener">MCP /health</a>
           <a class="btn btn-ghost btn-sm" href="/api/reports/export/markdown" target="_blank" rel="noopener">Export Report .md</a>
         </div>
@@ -92,12 +101,12 @@
     </div>
   </div>
 
-  <div class="toast-stack" id="toast-stack"></div>
-  <div class="modal-backdrop hidden" id="modal-backdrop">
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <div class="modal-backdrop hidden" id="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-card">
       <div class="modal-head">
         <h3 id="modal-title">Inspector</h3>
-        <button class="btn btn-ghost btn-sm" id="modal-close" type="button">Close</button>
+        <button class="btn btn-ghost btn-sm" id="modal-close" type="button" aria-label="Close modal">Close</button>
       </div>
       <div class="modal-body" id="modal-body"></div>
     </div>

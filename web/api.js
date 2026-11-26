@@ -38,8 +38,14 @@ export function toast(message, kind = "info") {
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
   el.textContent = message;
+  el.title = "Click to dismiss";
+  el.setAttribute("role", "status");
+  const timer = setTimeout(() => el.remove(), 4800);
+  el.addEventListener("click", () => {
+    clearTimeout(timer);
+    el.remove();
+  });
   stack.appendChild(el);
-  setTimeout(() => el.remove(), 4800);
 }
 
 export function openModal(title, html) {

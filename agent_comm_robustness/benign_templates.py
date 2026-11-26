@@ -12,7 +12,6 @@ from .payloads import (
     PayloadTemplate,
     PayloadVariant,
     make_valid_derived,
-    make_valid_observed,
 )
 from .protocol import (
     AgentMessage,

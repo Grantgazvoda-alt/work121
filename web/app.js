@@ -1,4 +1,4 @@
-import { apiGet, apiPost, closeModal, esc, toast } from "./api.js";
+import { apiGet, apiPost, closeModal, esc, openModal, toast } from "./api.js";
 import {
   renderMcpPage,
   renderTaxonomyPage,
@@ -137,6 +137,13 @@ async function renderCurrentRoute() {
     a.classList.toggle("active", a.dataset.route === route);
   });
 
+  const sidebar = document.getElementById("sidebar");
+  const navToggle = document.getElementById("btn-nav-toggle");
+  if (sidebar?.classList.contains("nav-open")) {
+    sidebar.classList.remove("nav-open");
+    navToggle?.setAttribute("aria-expanded", "false");
+  }
+
   const pageRoot = document.getElementById("page-root");
   const slot = document.createElement("div");
   slot.dataset.routeSeq = String(seq);
@@ -152,6 +159,54 @@ async function renderCurrentRoute() {
   }
 }
 
+function openQuickGuideModal() {
+  openModal(
+    "Quick Start Guide & Plain-English Glossary",
+    `
+      <p class="card-sub mb-12">
+        <strong>work121</strong> tests whether AI agents and multi-agent tool pipelines resist prompt injection and framing smuggling — backed by deterministic statistics and wire-level checks.
+      </p>
+      <div class="guide-grid">
+        <div class="guide-step">
+          <div class="guide-step-title">1. Connect or Auto-Discover a Model</div>
+          <p>Register a live local <strong>Ollama</strong> model with one click (Auto-Discover) or connect OpenAI-compatible, Anthropic, or Gemini endpoints. Simulated baseline agents work immediately without an API key.</p>
+          <div class="btn-row"><button class="btn btn-secondary btn-sm" type="button" data-guide-route="overview">Go to Overview</button></div>
+        </div>
+        <div class="guide-step">
+          <div class="guide-step-title">2. Run One-Tap or Custom Evals</div>
+          <p>Use <strong>One-Tap Full Suite Launch</strong> on Overview for the 4-stage pipeline, or configure benign + indirect injection sweeps in <strong>Eval Suite &amp; Runner</strong>.</p>
+          <div class="btn-row"><button class="btn btn-secondary btn-sm" type="button" data-guide-route="configure-run">Go to Eval Runner</button></div>
+        </div>
+        <div class="guide-step">
+          <div class="guide-step-title">3. Inspect Heatmaps &amp; Significance</div>
+          <p>Measure exact failure rates with <strong>Wilson 95% confidence intervals</strong> and compare two versions via exact <strong>Fisher</strong> and paired <strong>McNemar</strong> p-values.</p>
+          <div class="btn-row"><button class="btn btn-secondary btn-sm" type="button" data-guide-route="susceptibility">Go to Stats &amp; Heatmaps</button></div>
+        </div>
+        <div class="guide-step">
+          <div class="guide-step-title">4. Release Gate &amp; OWASP Audit</div>
+          <p>Enforce automated <code>ADMIT</code> / <code>CONDITIONAL_REVIEW</code> / <code>BLOCK</code> release decisions in the <strong>Hamster Wheel</strong> and inspect <strong>OWASP LLM01 / LLM07 / LLM08</strong> controls.</p>
+          <div class="btn-row"><button class="btn btn-secondary btn-sm" type="button" data-guide-route="owasp">Go to OWASP Audit</button></div>
+        </div>
+      </div>
+      <div class="card mt-16">
+        <h4 class="card-title mb-12">Key Terms Explained</h4>
+        <ul class="card-sub" style="margin:0;padding-left:18px;display:grid;gap:6px;">
+          <li><strong>Wire Gate (Python + Rust):</strong> Verifies framed messages (<code>raw</code>, <code>length_prefixed</code>, <code>ndjson</code>) with HMAC-SHA256 replay protection before prompts reach an agent.</li>
+          <li><strong>2-Hop Relay Ablation:</strong> Runs the same task with and without gateway boundary defenses to quantify injection reduction between Agent A and Agent B.</li>
+          <li><strong>Hamster Wheel Gauntlet:</strong> Multi-cycle endurance gate that blocks unstable or drifting agent builds from shipping.</li>
+          <li><strong>Regression Diff:</strong> Compares two saved JSONL runs pinned to the same SHA-256 prompt template hash.</li>
+        </ul>
+      </div>
+    `
+  );
+  document.querySelectorAll("#modal-body [data-guide-route]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeModal();
+      appState.navigate(btn.dataset.guideRoute);
+    });
+  });
+}
+
 function initShell() {
   document.getElementById("modal-close")?.addEventListener("click", closeModal);
   document.getElementById("modal-backdrop")?.addEventListener("click", (ev) => {
@@ -159,6 +214,16 @@ function initShell() {
   });
   document.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") closeModal();
+  });
+
+  document.getElementById("btn-quick-help")?.addEventListener("click", openQuickGuideModal);
+
+  const navToggle = document.getElementById("btn-nav-toggle");
+  navToggle?.addEventListener("click", () => {
+    const sidebar = document.getElementById("sidebar");
+    if (!sidebar) return;
+    const isOpen = sidebar.classList.toggle("nav-open");
+    navToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
   });
 
   document.getElementById("btn-refresh-discovery")?.addEventListener("click", async () => {

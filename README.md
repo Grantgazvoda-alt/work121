@@ -24,11 +24,14 @@ A unified defensive research and CI evaluation toolkit for analyzing how LLM arc
 - **`eval_runner.py`**:
   - `TargetAgent` protocol, `AgentRegistry`, `SimulatedAgentProfile`, and `execute_evaluation_run` with paired-baseline linkage, full multi-turn transcript persistence, streaming progress callbacks, and custom model adapters.
 - **`tool_runtime.py` & `mcp_http_server.py`**:
-  - `LocalMcpServer`, `HttpMcpClient`, & Starlette/Uvicorn HTTP JSON-RPC 2.0 server (`/mcp`, `/mcp/clean`, `/tools`, `/health` on port `8775`) with strict `jsonschema` validation and **8 real executable tools**: live Open-Meteo meteorological API (`get_weather`), exact C/F/K math (`convert_temperature`), disk-backed Okapi BM25 retriever over `corpus/*.md` (`search_research_corpus`), `validate_json_schema`, real Pillow PNG chart renderer (`generate_chart_asset`), saved JSONL inspection (`list_eval_runs`, `inspect_eval_run`), and `evaluate_protocol_handoff`.
-- **`live_adapters.py`**:
-  - `LiveHttpAgent` & `LiveProviderConfig`: Live `TargetAgent` adapters for **Ollama**, **OpenAI / OpenAI-compatible**, **Anthropic**, and **Google Gemini** with automatic HTTP retry backoff, multi-round native MCP tool-calling loops (`run_tool_loop` + automatic tool execution in `run_case`), and automatic real-PNG multimodal routing (`run_multimodal_probe` + `is_multimodal_model`).
+  - `LocalMcpServer`, `HttpMcpClient`, & Starlette/Uvicorn HTTP JSON-RPC 2.0 server (`/mcp`, `/mcp/clean`, `/tools`, `/health` on port `8775`) with strict `jsonschema` validation and **9 real executable tools**: live Open-Meteo meteorological API (`get_weather`), exact C/F/K math (`convert_temperature`), disk-backed Okapi BM25 retriever over `corpus/*.md` (`search_research_corpus`), `validate_json_schema`, real Pillow PNG chart renderer (`generate_chart_asset`), saved JSONL inspection (`list_eval_runs`, `inspect_eval_run`), `evaluate_protocol_handoff`, and `statistical_significance_test`.
+- **`live_adapters.py` & `live_providers.py`**:
+  - `LiveHttpAgent` & `LiveProviderConfig` (`live_adapters.py`) plus `LiveHttpAgent` / `discover_live_agents` / `resolve_spec` (`live_providers.py`): Live adapters for **Ollama**, **OpenAI / OpenAI-compatible** (LiteLLM, LM Studio, vLLM, Ollama `/v1`), **Anthropic**, and **Google Gemini** with retry backoff, native MCP tool-calling loops (`run_tool_loop`), and real-PNG multimodal probes (`run_multimodal_probe`).
   - `EmbeddingAlignmentScorer`: Computes real 768-dim dense cosine alignment per turn via Ollama `/api/embed` (`nomic-embed-text:latest`) for empirical `drift_slope` tracking.
   - `IndirectInvariantJudge`, `LiveLlmSemanticJudge`, & 3-tier `HybridSemanticJudge` (programmatic invariants → live LLM rubric → offline `PolicyAnchorSemanticJudge`).
+- **`wire_transport.py`, `wire_suite.py`, `boundary_oracle.py`, & `oracle_keys.py`**:
+  - `WireTargetAgent` & `LoopbackWirePeer`: Real TCP loopback `TargetAgent` speaking framed (`raw`, `length_prefixed`, `ndjson`), replay-windowed, nonce-bound, and HMAC-SHA256 `OBSERVED`-signed wire messages loaded via `wire_suite.load_suite()` (with optional upstream `Grantgazvoda-alt/work122` distribution or in-repo fallback).
+  - `BoundaryOracle` & `oracle_keys`: Deterministic per-turn boundary pressure policy and env/file HMAC oracle key loader (`.env.example`).
 - **`multi_agent_relay.py`**:
   - `MultiAgentRelayRunner`, `ProtocolRelayGateway`, `GatewayDefensePolicy`, & `RelayScenario`: Executes live 2-hop cross-model relays (`Agent A → Protocol Gateway → Agent B`) with defense ablation toggles (`sanitize_control_tokens`, case-insensitive `escape_xml_delimiters`, `envelope_wrap_json`) and JSON persistence (`to_dict` / `from_dict`).
 - **`statistical_analysis.py`**:
@@ -37,18 +40,22 @@ A unified defensive research and CI evaluation toolkit for analyzing how LLM arc
   - `EmpiricalReportGenerator`: Aggregates all persisted JSONL runs (with paired McNemar p-values), 2-hop relay traces, OWASP LLM Top 10 remediation plans, and per-template cross-model breakdowns into publication-ready Markdown (`empirical_report.md`) and `booktabs` LaTeX tables (`empirical_results.tex`).
 - **`cli.py`, `run_live_eval.py`, & `hamster_wheel.py`**:
   - `cli.py` (`work121`): Offline/CI regression gate (`run --use-anchor-judge`, `diff --fail-on-regression --fail-on-template-drift`, `audit-owasp`, `stats --fail-on-significant-regression`).
-  - `run_live_eval.py` (`work121-live`): Live cross-model evaluation CLI (`--provider`, `--models`, `--all-protocols`, `--paired`, `--mcp-url`, `--embed-model`, `--judge-model`, `--judge-mode`, `--generate-report`).
+  - `run_live_eval.py` (`work121-live`): Live cross-model evaluation CLI (`--provider`, `--models`, `--all-protocols`, `--paired`, `--template-id`, `--mcp-url`, `--embed-model`, `--judge-model`, `--judge-mode`, `--generate-report`).
   - `hamster_wheel.py` (`work121-wheel`): Continuous multi-cycle defensive admission gauntlet (`ModelHamsterWheel`) testing paired indirect inputs, benign templates, wire-protocol translations, 2-hop relay ablations, and OWASP admission verdicts (`ADMIT` / `CONDITIONAL_REVIEW` / `BLOCK`).
 - **`agent_comm_robustness/` & `native/`**:
   - Inter-agent wire framing & parser validation suite (`HardenedBoundaryGate`, `PayloadGenerator`, `BenignEdgeGenerator`, `SuiteRunner`) verifying framing resilience (`raw`, `length_prefixed`, `ndjson`), strict UTF-8/JSON, token boundaries, and HMAC-SHA256 `OBSERVED` signatures—paired with a zero-dependency **native Rust binary gate** (`native/src/main.rs`) for microsecond Python-vs-Rust parity checking.
-- **`backend_server.py` & `web/` (`work121-server`)**:
-  - Unified Starlette/Uvicorn ASGI server (`http://127.0.0.1:8775`) hosting the **10-page wire-paged interactive Web Workbench (`web/`)**, full `/api/*` REST endpoints with Python + Rust native gate parity, real-time WebSocket job telemetry (`/ws/jobs/{job_id}`), and MCP JSON-RPC 2.0 endpoints (`/mcp`, `/mcp/clean`, `/tools`, `/health`).
+- **`backend_server.py`, `web/`, & `one_tap.ps1` (`work121-server`)**:
+  - Unified Starlette/Uvicorn ASGI server (`http://127.0.0.1:8775`) hosting the **10-page interactive Web Workbench (`web/`)**, full `/api/*` REST endpoints with Python + Rust native gate parity, real-time WebSocket job telemetry (`/ws/jobs/{job_id}`), and MCP JSON-RPC 2.0 endpoints (`/mcp`, `/mcp/clean`, `/tools`, `/health`).
+  - `one_tap.ps1`: Windows One-Tap launcher starting Ollama, building/verifying `bin/work121.exe`, launching the workbench server, opening Edge/Chrome `--app` mode, and pinning Desktop & Start Menu shortcuts (`work121_art.ico`).
 - **`dashboard.py`**:
   - Unified 7-tab Streamlit workbench (`Configure & Run`, `Indirect Input Taxonomy`, `Live MCP Tools & Multimodal` [9 real JSON-RPC tools], `Live Multi-Agent Relay Lab`, `Susceptibility & Transcripts` [with exact Fisher/McNemar significance testing], `Version Regression Diff`, `OWASP Audit & Controls`).
 
 ## CLI & Server Usage
 
 ```bash
+# Install editable package (add [work122] to pin upstream Grantgazvoda-alt/work122 wire suite)
+pip install -e ".[ui,dev,work122]"
+
 # Build Native Rust Wire Gate & Launch Unified 10-Page Web Workbench + MCP Server (port 8775)
 cargo build --release --manifest-path native/Cargo.toml
 copy native\target\release\work121.exe bin\work121.exe
@@ -75,6 +82,7 @@ python run_live_eval.py --output-dir eval_runs --generate-report eval_runs/repor
 ```bash
 pytest -v
 python backend_server.py --port 8775   # 10-page Web Workbench + REST/WS + MCP server
+powershell -ExecutionPolicy Bypass -File .\one_tap.ps1   # Windows One-Tap App Window
 streamlit run dashboard.py             # 7-tab Streamlit Workbench
 ```
 

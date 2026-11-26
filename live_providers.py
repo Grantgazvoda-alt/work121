@@ -316,7 +316,7 @@ class LiveHttpAgent:
         prompt_tokens = 0
         completion_tokens = 0
         saw_usage = False
-        for index, user_turn in enumerate(test_case.user_turns):
+        for index, _user_turn in enumerate(test_case.user_turns):
             turns = _case_turns(
                 system_boundary=test_case.system_boundary,
                 user_turns=test_case.user_turns[: index + 1],
@@ -528,7 +528,7 @@ def _ensure_openai_tool_call(messages: list[dict[str, Any]], turn: TurnRecord) -
 def _anthropic_messages(turns: list[TurnRecord]) -> tuple[str, list[dict[str, Any]]]:
     system_parts = [turn.content.strip() for turn in turns if turn.role == "system" and turn.content.strip()]
     messages: list[dict[str, Any]] = []
-    for index, turn in enumerate(turns):
+    for turn in turns:
         role = _require_role(turn.role)
         if role == "system":
             continue
@@ -591,7 +591,7 @@ def _append_anthropic(messages: list[dict[str, Any]], block: dict[str, Any]) -> 
 def _gemini_contents(turns: list[TurnRecord]) -> tuple[str, list[dict[str, Any]]]:
     system_parts = [turn.content.strip() for turn in turns if turn.role == "system" and turn.content.strip()]
     contents: list[dict[str, Any]] = []
-    for index, turn in enumerate(turns):
+    for turn in turns:
         role = _require_role(turn.role)
         if role == "system":
             continue

@@ -87,31 +87,36 @@ export async function renderOverviewPage(root, appState) {
     </div>
 
     <div class="grid grid-5">
-      <div class="kpi">
+      <button type="button" class="kpi kpi-link" data-kpi-route="susceptibility" title="Open Susceptibility &amp; Stats for heatmaps and exact p-values">
         <div class="kpi-label">Saved Eval Runs</div>
         <div class="kpi-value">${esc(c.saved_runs ?? 0)}</div>
         <div class="kpi-note">${esc(c.total_eval_records ?? 0)} artifact records</div>
-      </div>
-      <div class="kpi">
+        <div class="kpi-action">Inspect stats &rarr;</div>
+      </button>
+      <button type="button" class="kpi kpi-link" data-kpi-action="focus-agents" title="Jump to registered target agents table and search filter">
         <div class="kpi-label">Registered Agents</div>
         <div class="kpi-value">${esc(c.registered_agents ?? 0)}</div>
         <div class="kpi-note">${esc(c.live_agents ?? 0)} live endpoint(s)</div>
-      </div>
-      <div class="kpi">
+        <div class="kpi-action">Browse targets &darr;</div>
+      </button>
+      <button type="button" class="kpi kpi-link" data-kpi-route="wire-lab" title="Open Wire Framing &amp; Hex Lab to inspect protocol framing parity">
         <div class="kpi-label">Wire Matrix Cases</div>
         <div class="kpi-value">${esc(c.wire_cases ?? 0)}</div>
         <div class="kpi-note">${overview.native_binary ? "Rust binary parity READY" : "Rust binary NOT BUILT"}</div>
-      </div>
-      <div class="kpi">
+        <div class="kpi-action">Open wire lab &rarr;</div>
+      </button>
+      <button type="button" class="kpi kpi-link" data-kpi-route="mcp-multimodal" title="Open MCP Tools &amp; Multimodal to exercise all 9 live tools">
         <div class="kpi-label">MCP Tools &amp; Corpus</div>
         <div class="kpi-value">${esc(c.mcp_tools ?? 0)} / ${esc(c.corpus_docs ?? 0)}</div>
         <div class="kpi-note">${esc(c.indirect_templates ?? 0)} indirect + ${esc(c.benign_templates ?? 0)} benign templates</div>
-      </div>
-      <div class="kpi">
+        <div class="kpi-action">Try MCP tools &rarr;</div>
+      </button>
+      <button type="button" class="kpi kpi-link" data-kpi-route="hamster-wheel" title="Open Hamster Wheel Gauntlet to inspect ADMIT/BLOCK admission gates">
         <div class="kpi-label">Relays &amp; Wheel</div>
         <div class="kpi-value">${esc(c.relay_traces ?? 0)} / ${esc(c.wheel_reports ?? 0)}</div>
         <div class="kpi-note">2-hop traces / admission reports</div>
-      </div>
+        <div class="kpi-action">Open gauntlet &rarr;</div>
+      </button>
     </div>
 
     <div class="grid grid-2 mt-16">
@@ -121,6 +126,7 @@ export async function renderOverviewPage(root, appState) {
             <h2 class="card-title">1. Run Adherence Overview (% Safe Rate)</h2>
             <p class="card-sub">Persisted evaluation artifacts in <code>${esc(overview.runs_dir)}</code>.</p>
           </div>
+          <button class="btn btn-ghost btn-sm" id="ov-go-stats" type="button">Full Stats &rarr;</button>
         </div>
         <div>${renderBarChartSvg(safeBars, { height: 220, valueFmt: (v) => `${v}%` })}</div>
       </div>
@@ -131,19 +137,19 @@ export async function renderOverviewPage(root, appState) {
             <h2 class="card-title">2. Register Live LLM Endpoint</h2>
             <p class="card-sub">Connect Ollama, OpenAI-compatible, Anthropic, or Gemini models directly into the workbench.</p>
           </div>
-          <button class="btn btn-secondary btn-sm" id="ov-discover-btn" type="button">Auto-Discover</button>
+          <button class="btn btn-secondary btn-sm" id="ov-discover-btn" type="button" title="Scan localhost Ollama endpoints automatically">Auto-Discover</button>
         </div>
         <div class="grid grid-2">
           <label class="field">Provider
             <select id="reg-provider">
-              <option value="ollama">ollama</option>
-              <option value="openai_compatible">openai_compatible</option>
-              <option value="anthropic">anthropic</option>
-              <option value="gemini">gemini</option>
+              <option value="ollama">ollama (Local Ollama)</option>
+              <option value="openai_compatible">openai_compatible (OpenAI / vLLM / LiteLLM)</option>
+              <option value="anthropic">anthropic (Claude Messages API)</option>
+              <option value="gemini">gemini (Google Gemini API)</option>
             </select>
           </label>
           <label class="field">Model ID
-            <input type="text" id="reg-model-id" placeholder="e.g. qwen2.5-coder:7b or gpt-4o-mini" />
+            <input type="text" id="reg-model-id" placeholder="e.g. qwen2.5-coder:7b" />
           </label>
         </div>
         <div class="grid grid-3 mt-12">
@@ -154,9 +160,11 @@ export async function renderOverviewPage(root, appState) {
             <input type="text" id="reg-base-url" placeholder="http://127.0.0.1:11434" />
           </label>
           <label class="field">API Key (optional, env fallback)
-            <input type="password" id="reg-api-key" placeholder="Uses env key if blank" />
+            <input type="password" id="reg-api-key" placeholder="Not needed for local Ollama" />
           </label>
         </div>
+        <p class="card-sub mt-12" id="reg-provider-hint"></p>
+        <div class="field-hint hidden mt-12" id="reg-form-feedback" role="alert"></div>
         <div class="btn-row mt-12">
           <button class="btn btn-secondary" id="btn-test-endpoint" type="button">Health Check</button>
           <button class="btn btn-primary" id="btn-reg-endpoint" type="button">Register Target Agent</button>
@@ -452,19 +460,102 @@ export async function renderOverviewPage(root, appState) {
     }
   });
 
-  function readEndpointPayload() {
-    return {
+  document.getElementById("ov-go-stats")?.addEventListener("click", () => appState.navigate("susceptibility"));
+
+  document.querySelectorAll(".kpi-link[data-kpi-route]").forEach((cardBtn) => {
+    cardBtn.addEventListener("click", () => appState.navigate(cardBtn.dataset.kpiRoute));
+  });
+  document.querySelector('.kpi-link[data-kpi-action="focus-agents"]')?.addEventListener("click", () => {
+    const filterInput = document.getElementById("ov-agent-filter");
+    filterInput?.scrollIntoView({ behavior: "smooth", block: "center" });
+    filterInput?.focus();
+  });
+
+  const PROVIDER_PRESETS = {
+    ollama: {
+      model: "e.g. qwen2.5-coder:7b",
+      baseUrl: "http://127.0.0.1:11434",
+      apiKey: "Not needed for local Ollama",
+      hint: "Local Ollama: defaults to http://127.0.0.1:11434 — click Auto-Discover to scan installed models automatically.",
+    },
+    openai_compatible: {
+      model: "e.g. gpt-4o-mini or local model id",
+      baseUrl: "https://api.openai.com (or http://127.0.0.1:1234)",
+      apiKey: "sk-... or OPENAI_API_KEY env",
+      hint: "OpenAI-compatible (OpenAI, LiteLLM, vLLM, LM Studio): supply Base URL if local, or set OPENAI_API_KEY.",
+    },
+    anthropic: {
+      model: "e.g. claude-3-5-sonnet-latest",
+      baseUrl: "https://api.anthropic.com",
+      apiKey: "sk-ant-... or ANTHROPIC_API_KEY env",
+      hint: "Anthropic Messages API: automatically falls back to ANTHROPIC_API_KEY when API Key is blank.",
+    },
+    gemini: {
+      model: "e.g. gemini-2.5-flash",
+      baseUrl: "https://generativelanguage.googleapis.com",
+      apiKey: "AIza... or GEMINI_API_KEY env",
+      hint: "Google Gemini API: automatically falls back to GEMINI_API_KEY or GOOGLE_API_KEY when API Key is blank.",
+    },
+  };
+
+  function syncProviderPreset() {
+    const providerEl = document.getElementById("reg-provider");
+    const preset = PROVIDER_PRESETS[providerEl.value] || PROVIDER_PRESETS.ollama;
+    document.getElementById("reg-model-id").placeholder = preset.model;
+    document.getElementById("reg-base-url").placeholder = preset.baseUrl;
+    document.getElementById("reg-api-key").placeholder = preset.apiKey;
+    const hintEl = document.getElementById("reg-provider-hint");
+    if (hintEl) hintEl.textContent = preset.hint;
+  }
+
+  function clearEndpointFeedback() {
+    const feedback = document.getElementById("reg-form-feedback");
+    const modelInput = document.getElementById("reg-model-id");
+    modelInput?.classList.remove("input-error");
+    if (feedback) {
+      feedback.textContent = "";
+      feedback.classList.add("hidden");
+    }
+  }
+
+  function validateEndpointPayload() {
+    const payload = {
       provider: document.getElementById("reg-provider").value,
       model_id: document.getElementById("reg-model-id").value.trim(),
       model_version: document.getElementById("reg-version").value.trim() || "live-custom",
       base_url: document.getElementById("reg-base-url").value.trim(),
       api_key: document.getElementById("reg-api-key").value.trim() || null,
     };
+    if (!payload.model_id) {
+      const modelInput = document.getElementById("reg-model-id");
+      const feedback = document.getElementById("reg-form-feedback");
+      modelInput?.classList.add("input-error");
+      modelInput?.focus();
+      const msg = payload.provider === "ollama"
+        ? "Enter a Model ID (for example qwen2.5-coder:7b), or click Auto-Discover for local Ollama models."
+        : `Enter a Model ID for ${payload.provider} before running this action.`;
+      if (feedback) {
+        feedback.textContent = msg;
+        feedback.classList.remove("hidden");
+      }
+      toast(msg, "err");
+      return null;
+    }
+    clearEndpointFeedback();
+    return payload;
   }
 
+  document.getElementById("reg-provider").addEventListener("change", () => {
+    syncProviderPreset();
+    clearEndpointFeedback();
+  });
+  document.getElementById("reg-model-id").addEventListener("input", clearEndpointFeedback);
+  syncProviderPreset();
+
   document.getElementById("btn-test-endpoint").addEventListener("click", async () => {
+    const payload = validateEndpointPayload();
+    if (!payload) return;
     try {
-      const payload = readEndpointPayload();
       const res = await apiPost("/api/agents/health", payload);
       document.getElementById("reg-health-status").textContent = res.message;
       toast(res.message, res.ok ? "ok" : "err");
@@ -474,8 +565,9 @@ export async function renderOverviewPage(root, appState) {
   });
 
   document.getElementById("btn-reg-endpoint").addEventListener("click", async () => {
+    const payload = validateEndpointPayload();
+    if (!payload) return;
     try {
-      const payload = readEndpointPayload();
       const res = await apiPost("/api/agents/register", payload);
       toast(`Registered ${res.registered}`, "ok");
       const refreshed = await apiGet("/api/agents");
