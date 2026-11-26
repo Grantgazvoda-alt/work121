@@ -27,6 +27,12 @@ ANTHROPIC_DEFAULT_BASE = "https://api.anthropic.com"
 GEMINI_DEFAULT_BASE = "https://generativelanguage.googleapis.com"
 ANTHROPIC_VERSION = "2023-06-01"
 
+PRIORITY_GEMINI_MODELS: tuple[str, ...] = (
+    "gemini-4-carbon",
+    "gemini-4-neon",
+    "gemini-4-argon",
+)
+
 PROVIDER_CHOICES = (
     "ollama",
     "openai",
@@ -197,7 +203,7 @@ def discover_live_agents(*, timeout: float = 0.4) -> tuple[LiveAgentSpec, ...]:
                 provider="gemini",
                 kind=ProviderKind.GEMINI,
                 base_url=_base_from_env("GEMINI_BASE_URL", GEMINI_DEFAULT_BASE),
-                model=_env("GEMINI_MODEL") or "gemini-2.0-flash",
+                model=_env("GEMINI_MODEL") or "gemini-4-neon",
                 key_env="GEMINI_API_KEY",
                 architecture_family="gemini-generate",
                 reachable=None,
@@ -745,16 +751,21 @@ def _parse_gemini(body: dict[str, Any], provider: str) -> tuple[str, TokenUsage 
             signal="provider_bad_response",
         )
     texts: list[str] = []
+    thought_texts: list[str] = []
     for part in parts:
         if not isinstance(part, dict):
             continue
         if isinstance(part.get("text"), str):
-            texts.append(part["text"])
+            if part.get("thought"):
+                thought_texts.append(part["text"])
+            else:
+                texts.append(part["text"])
         function_call = part.get("functionCall")
         if isinstance(function_call, dict) and isinstance(function_call.get("name"), str):
             arguments = function_call.get("args") if isinstance(function_call.get("args"), dict) else {}
             texts.append(json.dumps({"tool": function_call["name"], "arguments": arguments}, sort_keys=True))
-    text = "\n".join(item for item in texts if item).strip()
+    chosen = texts if any(item.strip() for item in texts) else thought_texts
+    text = "\n".join(item for item in chosen if item).strip()
     if not text:
         raise LiveProviderError(
             f"Provider {provider} response did not include text or functionCall parts.",
@@ -976,7 +987,7 @@ def _fallback_spec(provider: str) -> LiveAgentSpec:
         "gemini",
         ProviderKind.GEMINI,
         _base_from_env("GEMINI_BASE_URL", GEMINI_DEFAULT_BASE),
-        _env("GEMINI_MODEL") or "gemini-2.0-flash",
+        _env("GEMINI_MODEL") or "gemini-4-neon",
         "GEMINI_API_KEY",
         "gemini-generate",
         None,

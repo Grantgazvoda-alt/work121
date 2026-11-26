@@ -13,6 +13,7 @@ from indirect_input_classifier import (
     build_default_template_library,
 )
 from live_adapters import (
+    PRIORITY_GEMINI_MODELS,
     EmbeddingAlignmentScorer,
     HybridSemanticJudge,
     LiveHttpAgent,
@@ -167,6 +168,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional live Ollama judge model (e.g., llama3.1:latest or qwen2.5-coder:7b) for HybridSemanticJudge on open-ended/multi-turn cases.",
     )
     parser.add_argument(
+        "--gemini-priority",
+        action="store_true",
+        help="Benchmark Gemini 4 priority models sequentially (gemini-4-carbon, gemini-4-neon, gemini-4-argon).",
+    )
+    parser.add_argument(
+        "--long-horizon",
+        action="store_true",
+        help="Focus benign/multi-turn suite on long-horizon Crescendo & Many-Shot context templates.",
+    )
+    parser.add_argument(
+        "--thinking-level",
+        choices=["low", "medium", "high", "xhigh"],
+        default=None,
+        help="Optional Gemini 4 thinkingConfig level (low, medium, high, xhigh).",
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=120.0,
@@ -215,6 +232,7 @@ def _resolve_agent(args: argparse.Namespace) -> TargetAgent:
             model_version=args.model_version,
             base_url=args.base_url,
             timeout_seconds=args.timeout,
+            thinking_level=getattr(args, "thinking_level", None),
         ),
         mcp_backend=mcp_backend,
         clean_mcp_backend=clean_mcp_backend,
@@ -322,11 +340,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.all_protocols
         else [ProtocolFormat(args.protocol) if args.protocol else None]
     )
-    models_to_run: list[str] = list(args.models) if args.models else [args.model]
+    if args.gemini_priority:
+        if args.provider == "ollama" and not args.model.strip():
+            args.provider = "gemini"
+        models_to_run = list(PRIORITY_GEMINI_MODELS)
+    else:
+        models_to_run = list(args.models) if args.models else [args.model]
+
+    long_horizon_ids = (
+        "long_horizon_crescendo_drift",
+        "long_horizon_many_shot_context",
+        "drift_tone_shift_multiturn",
+        "drift_scope_creep_multiturn",
+    )
+    effective_suite = "all" if (args.long_horizon and args.suite == "indirect") else args.suite
 
     def _build_cases(target_protocol: Optional[ProtocolFormat]) -> list:
         built = []
-        if args.suite in ("indirect", "all"):
+        if effective_suite in ("indirect", "all"):
             if args.templates:
                 valid_ids = {t.template_id for t in library.list_templates()}
                 ind_tpls = [library.get(tid) for tid in args.templates if tid in valid_ids]
@@ -343,8 +374,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                             protocol=target_protocol,
                         )
                     )
-        if args.suite in ("benign", "all"):
-            if args.templates:
+        if effective_suite in ("benign", "all"):
+            if args.long_horizon and not args.templates:
+                ben_tpls = [benign_lib.get(tid) for tid in long_horizon_ids]
+            elif args.templates:
                 valid_ben = {t.template_id for t in benign_lib.list_templates()}
                 ben_tpls = [benign_lib.get(tid) for tid in args.templates if tid in valid_ben]
             else:

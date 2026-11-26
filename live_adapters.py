@@ -46,6 +46,29 @@ ENV_KEY_NAMES: dict[ProviderKind, tuple[str, ...]] = {
     ProviderKind.OLLAMA: (),
 }
 
+PRIORITY_GEMINI_MODELS: tuple[str, ...] = (
+    "gemini-4-carbon",
+    "gemini-4-neon",
+    "gemini-4-argon",
+)
+
+_GEMINI_ELEMENT_RE = re.compile(r"\bgemini[-_ ]?(?:4[-_ ]?)?(argon|carbon|neon|hydrogen)\b", re.I)
+
+
+def extract_gemini_parts_text(parts: Any) -> str:
+    """Extract visible assistant text from Gemini candidate parts, separating thought summaries."""
+    if not isinstance(parts, list):
+        return ""
+    visible = [
+        str(p.get("text", ""))
+        for p in parts
+        if isinstance(p, dict) and "text" in p and not p.get("thought")
+    ]
+    if any(t.strip() for t in visible):
+        return "\n".join(visible)
+    fallback = [str(p.get("text", "")) for p in parts if isinstance(p, dict) and "text" in p]
+    return "\n".join(fallback)
+
 
 def infer_architecture_family(provider: ProviderKind, model_id: str) -> str:
     """Infer a concise architecture family tag from provider and model identifier."""
@@ -64,6 +87,8 @@ def infer_architecture_family(provider: ProviderKind, model_id: str) -> str:
         return "openai-instruction-hierarchy"
     if "claude" in lower:
         return "anthropic-structured-tag"
+    if "gemini-4" in lower or _GEMINI_ELEMENT_RE.search(lower):
+        return "gemini-4-thinking-multimodal"
     if "gemini" in lower:
         return "gemini-multimodal-native"
     return f"{provider.value}-decoder"
@@ -83,8 +108,12 @@ def is_multimodal_model(model_id: str) -> bool:
         "gemini-1.5",
         "gemini-2",
         "gemini-3",
+        "gemini-4",
+        "gemini4",
+        "gemma-4",
+        "gemma4",
     )
-    return any(marker in lower for marker in vision_markers)
+    return any(marker in lower for marker in vision_markers) or bool(_GEMINI_ELEMENT_RE.search(lower))
 
 
 def resolve_api_key(provider: ProviderKind, explicit_key: Optional[str] = None) -> Optional[str]:
@@ -111,6 +140,7 @@ class LiveProviderConfig:
     timeout_seconds: float = 120.0
     temperature: float = 0.0
     max_tokens: int = 512
+    thinking_level: Optional[str] = None
 
     @property
     def effective_base_url(self) -> str:
@@ -577,6 +607,15 @@ class LiveHttpAgent:
             int(usage.get("output_tokens", 0)),
         )
 
+    def _gemini_generation_config(self) -> dict[str, Any]:
+        cfg: dict[str, Any] = {
+            "temperature": self._config.temperature,
+            "maxOutputTokens": self._config.max_tokens,
+        }
+        if self._config.thinking_level:
+            cfg["thinkingConfig"] = {"thinkingLevel": self._config.thinking_level}
+        return cfg
+
     def _call_gemini(
         self, system_prompt: str, conversation: list[dict[str, str]]
     ) -> tuple[str, int, int]:
@@ -594,10 +633,7 @@ class LiveHttpAgent:
         payload = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": contents,
-            "generationConfig": {
-                "temperature": self._config.temperature,
-                "maxOutputTokens": self._config.max_tokens,
-            },
+            "generationConfig": self._gemini_generation_config(),
         }
         data = self._post_json_with_retry(
             f"{self._config.effective_base_url}/v1beta/models/{self._config.model_id}:generateContent",
@@ -609,7 +645,7 @@ class LiveHttpAgent:
         )
         candidates = data.get("candidates") or []
         parts = candidates[0].get("content", {}).get("parts", []) if (candidates and isinstance(candidates[0], dict)) else []
-        text = "\n".join(str(p.get("text", "")) for p in parts if isinstance(p, dict) and "text" in p)
+        text = extract_gemini_parts_text(parts)
         usage = data.get("usageMetadata", {})
         return (
             text,
@@ -648,7 +684,7 @@ class LiveHttpAgent:
         user_prompt: str,
         mcp_server: McpToolBackend,
         tool_names: Optional[list[str]] = None,
-        max_rounds: int = 4,
+        max_rounds: int = 8,
     ) -> ToolLoopResult:
         """Execute a live native tool-calling loop backed by real MCP JSON-RPC 2.0 execution."""
         started = time.perf_counter()
@@ -981,10 +1017,7 @@ class LiveHttpAgent:
                     "system_instruction": {"parts": [{"text": system_prompt}]},
                     "contents": contents,
                     "tools": tools_payload,
-                    "generationConfig": {
-                        "temperature": self._config.temperature,
-                        "maxOutputTokens": self._config.max_tokens,
-                    },
+                    "generationConfig": self._gemini_generation_config(),
                 },
             )
             usage = data.get("usageMetadata", {})
@@ -997,9 +1030,7 @@ class LiveHttpAgent:
 
             fn_calls = [p["functionCall"] for p in parts if isinstance(p, dict) and "functionCall" in p]
             if not fn_calls:
-                final_text = "\n".join(
-                    str(p.get("text", "")) for p in parts if isinstance(p, dict) and "text" in p
-                )
+                final_text = extract_gemini_parts_text(parts)
                 return final_text, traces, round_idx, p_tok, c_tok
 
             resp_parts = []
@@ -1141,10 +1172,7 @@ class LiveHttpAgent:
                             ],
                         }
                     ],
-                    "generationConfig": {
-                        "temperature": self._config.temperature,
-                        "maxOutputTokens": self._config.max_tokens,
-                    },
+                    "generationConfig": self._gemini_generation_config(),
                 },
             )
             candidates = data.get("candidates") or []
@@ -1152,7 +1180,7 @@ class LiveHttpAgent:
                 raise RuntimeError(f"Gemini multimodal API returned empty candidates: {data}")
             first_candidate = candidates[0] if isinstance(candidates[0], dict) else {}
             parts = first_candidate.get("content", {}).get("parts", [])
-            text = "\n".join(str(p.get("text", "")) for p in parts if isinstance(p, dict) and "text" in p)
+            text = extract_gemini_parts_text(parts)
             usage = data.get("usageMetadata", {})
             p_tok, c_tok = int(usage.get("promptTokenCount", 0)), int(usage.get("candidatesTokenCount", 0))
         else:
@@ -1267,20 +1295,31 @@ def discover_live_agents(
             )
         )
     if resolve_api_key(ProviderKind.GEMINI):
-        agents.append(
-            LiveHttpAgent(
-                LiveProviderConfig(
-                    provider=ProviderKind.GEMINI,
-                    model_id=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
-                    model_version="live-gemini",
-                ),
-                session=session,
+        explicit_gemini = os.environ.get("GEMINI_MODEL", "").strip()
+        gemini_models = list(dict.fromkeys(([explicit_gemini] if explicit_gemini else []) + list(PRIORITY_GEMINI_MODELS)))
+        for gem_model in gemini_models:
+            agents.append(
+                LiveHttpAgent(
+                    LiveProviderConfig(
+                        provider=ProviderKind.GEMINI,
+                        model_id=gem_model,
+                        model_version="live-gemini",
+                    ),
+                    session=session,
+                )
             )
-        )
 
     ollama_models = list_ollama_models(ollama_base_url, session=session)
-    # Prioritize standard well-known reference models first if present
-    preferred = ("llama3.1:latest", "qwen2.5-coder:7b", "qwen3.8:27b")
+    # Prioritize long-horizon and newer local models alongside baseline reference models
+    preferred = (
+        "qwen3.8-27b-longctx:latest",
+        "qwen3.8:27b",
+        "deepseek-v4.1-flash:cloud",
+        "eriktonon/deepseek-v4.1-flash-1017:9b",
+        "eriktonon/gemma4-uncensored:latest",
+        "llama3.1:latest",
+        "qwen2.5-coder:7b",
+    )
     ordered = [m for m in preferred if m in ollama_models] + [
         m for m in ollama_models if m not in preferred
     ]

@@ -746,6 +746,13 @@ def create_backend_app(
                     "registered_agents": len(agents),
                     "live_agents": live_count,
                 },
+                "priority_gemini_models": ["gemini-4-carbon", "gemini-4-neon", "gemini-4-argon"],
+                "long_horizon_template_ids": [
+                    "long_horizon_crescendo_drift",
+                    "long_horizon_many_shot_context",
+                    "drift_tone_shift_multiturn",
+                    "drift_scope_creep_multiturn",
+                ],
                 "agents": agents,
                 "active_jobs": state.jobs.list_jobs()[:10],
             }
@@ -842,6 +849,7 @@ def create_backend_app(
         model_id = str(body.get("model_id", "")).strip()
         if not model_id:
             return _json_error("model_id is required.", 400)
+        thinking_level = str(body.get("thinking_level", "")).strip().lower() or None
         cfg = LiveProviderConfig(
             provider=provider,
             model_id=model_id,
@@ -849,6 +857,7 @@ def create_backend_app(
             base_url=str(body.get("base_url", "")).strip(),
             api_key=str(body.get("api_key", "")).strip() or None,
             temperature=temp,
+            thinking_level=thinking_level,
         )
         agent = LiveHttpAgent(cfg)
         state.registry.register(agent)

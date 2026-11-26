@@ -139,18 +139,34 @@ export async function renderOverviewPage(root, appState) {
           </div>
           <button class="btn btn-secondary btn-sm" id="ov-discover-btn" type="button" title="Scan localhost Ollama endpoints automatically">Auto-Discover</button>
         </div>
-        <div class="grid grid-2">
+        <div class="grid grid-3">
           <label class="field">Provider
             <select id="reg-provider">
               <option value="ollama">ollama (Local Ollama)</option>
               <option value="openai_compatible">openai_compatible (OpenAI / vLLM / LiteLLM)</option>
               <option value="anthropic">anthropic (Claude Messages API)</option>
-              <option value="gemini">gemini (Google Gemini API)</option>
+              <option value="gemini">gemini (Google Gemini 4 / API)</option>
             </select>
           </label>
           <label class="field">Model ID
             <input type="text" id="reg-model-id" placeholder="e.g. qwen2.5-coder:7b" />
           </label>
+          <label class="field">Thinking Level (Gemini 4)
+            <select id="reg-thinking-level">
+              <option value="">default (dynamic)</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh (Neon/Hydrogen)</option>
+            </select>
+          </label>
+        </div>
+        <div class="btn-row mt-12">
+          <span class="card-sub">Gemini 4 Priority:</span>
+          <button class="btn btn-ghost btn-sm gemini-preset-btn" type="button" data-gemini-model="gemini-4-carbon">Carbon</button>
+          <button class="btn btn-ghost btn-sm gemini-preset-btn" type="button" data-gemini-model="gemini-4-neon">Neon</button>
+          <button class="btn btn-ghost btn-sm gemini-preset-btn" type="button" data-gemini-model="gemini-4-argon">Argon</button>
+          <button class="btn btn-secondary btn-sm" id="btn-reg-gemini-trio" type="button" title="Register gemini-4-carbon, gemini-4-neon, and gemini-4-argon at once">Register All 3</button>
         </div>
         <div class="grid grid-3 mt-12">
           <label class="field">Version Tag
@@ -491,10 +507,10 @@ export async function renderOverviewPage(root, appState) {
       hint: "Anthropic Messages API: automatically falls back to ANTHROPIC_API_KEY when API Key is blank.",
     },
     gemini: {
-      model: "e.g. gemini-2.5-flash",
+      model: "e.g. gemini-4-neon, gemini-4-carbon, gemini-4-argon",
       baseUrl: "https://generativelanguage.googleapis.com",
       apiKey: "AIza... or GEMINI_API_KEY env",
-      hint: "Google Gemini API: automatically falls back to GEMINI_API_KEY or GOOGLE_API_KEY when API Key is blank.",
+      hint: "Google Gemini 4 (Carbon / Neon / Argon): uses GEMINI_API_KEY or GOOGLE_API_KEY env when API Key is blank.",
     },
   };
 
@@ -525,6 +541,7 @@ export async function renderOverviewPage(root, appState) {
       model_version: document.getElementById("reg-version").value.trim() || "live-custom",
       base_url: document.getElementById("reg-base-url").value.trim(),
       api_key: document.getElementById("reg-api-key").value.trim() || null,
+      thinking_level: document.getElementById("reg-thinking-level")?.value || null,
     };
     if (!payload.model_id) {
       const modelInput = document.getElementById("reg-model-id");
@@ -550,6 +567,45 @@ export async function renderOverviewPage(root, appState) {
     clearEndpointFeedback();
   });
   document.getElementById("reg-model-id").addEventListener("input", clearEndpointFeedback);
+  document.querySelectorAll(".gemini-preset-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.getElementById("reg-provider").value = "gemini";
+      syncProviderPreset();
+      document.getElementById("reg-model-id").value = btn.dataset.geminiModel || "gemini-4-neon";
+      document.getElementById("reg-version").value = "live-gemini4";
+      clearEndpointFeedback();
+    });
+  });
+  document.getElementById("btn-reg-gemini-trio")?.addEventListener("click", async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      const baseUrl = document.getElementById("reg-base-url").value.trim();
+      const apiKey = document.getElementById("reg-api-key").value.trim() || null;
+      const thinkingLevel = document.getElementById("reg-thinking-level")?.value || null;
+      const version = document.getElementById("reg-version").value.trim() || "live-gemini4";
+      const trio = overview.priority_gemini_models || ["gemini-4-carbon", "gemini-4-neon", "gemini-4-argon"];
+      for (const modelId of trio) {
+        await apiPost("/api/agents/register", {
+          provider: "gemini",
+          model_id: modelId,
+          model_version: version,
+          base_url: baseUrl,
+          api_key: apiKey,
+          thinking_level: thinkingLevel,
+        });
+      }
+      toast(`Registered priority Gemini 4 models: ${trio.join(", ")}`, "ok");
+      const refreshed = await apiGet("/api/agents");
+      currentAgents = refreshed.agents || [];
+      renderAgentsTable();
+      await appState.refreshStatus();
+    } catch (err) {
+      toast(err.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
   syncProviderPreset();
 
   document.getElementById("btn-test-endpoint").addEventListener("click", async () => {
@@ -640,6 +696,7 @@ export async function renderConfigureRunPage(root, appState) {
         <div class="btn-row mt-12">
           <button class="btn btn-primary" id="btn-cfg-add" type="button">Queue Configured Case</button>
           <button class="btn btn-secondary" id="btn-cfg-load-benign" type="button">Load All ${templates.length} Benign Defaults</button>
+          <button class="btn btn-secondary" id="btn-cfg-load-longhorizon" type="button">Load Long-Horizon Suite</button>
           <button class="btn btn-secondary" id="btn-cfg-load-indirect" type="button">Load All ${indirectTemplates.length} Paired Indirect</button>
         </div>
       </div>
@@ -910,20 +967,39 @@ export async function renderConfigureRunPage(root, appState) {
     toast(`Queued ${latestPreview.test_case_id}.`, "ok");
   });
 
+  async function loadBenignBatch(targetTemplates, prefix, toastLabel) {
+    const rendered = await Promise.all(
+      targetTemplates.map((t) =>
+        apiPost("/api/templates/benign/render", {
+          template_id: t.template_id,
+          test_case_id: `${prefix}-${t.template_id}`,
+        })
+      )
+    );
+    appState.queuedBenign = rendered;
+    queuePage = 1;
+    renderQueue();
+    toast(`Loaded ${rendered.length} ${toastLabel}.`, "ok");
+  }
+
   document.getElementById("btn-cfg-load-benign").addEventListener("click", async () => {
     try {
-      const rendered = await Promise.all(
-        templates.map((t) =>
-          apiPost("/api/templates/benign/render", {
-            template_id: t.template_id,
-            test_case_id: `default-${t.template_id}`,
-          })
-        )
-      );
-      appState.queuedBenign = rendered;
-      queuePage = 1;
-      renderQueue();
-      toast(`Loaded ${rendered.length} default benign validation cases.`, "ok");
+      await loadBenignBatch(templates, "default", "default benign validation cases");
+    } catch (err) {
+      toast(err.message, "err");
+    }
+  });
+
+  document.getElementById("btn-cfg-load-longhorizon").addEventListener("click", async () => {
+    try {
+      const lhIds = new Set([
+        "long_horizon_crescendo_drift",
+        "long_horizon_many_shot_context",
+        "drift_tone_shift_multiturn",
+        "drift_scope_creep_multiturn",
+      ]);
+      const subset = templates.filter((t) => lhIds.has(t.template_id));
+      await loadBenignBatch(subset.length ? subset : templates, "longhorizon", "long-horizon multi-turn case(s)");
     } catch (err) {
       toast(err.message, "err");
     }

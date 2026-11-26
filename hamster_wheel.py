@@ -17,6 +17,7 @@ from indirect_input_classifier import (
 )
 from live_adapters import (
     DEFAULT_BASE_URLS,
+    PRIORITY_GEMINI_MODELS,
     EmbeddingAlignmentScorer,
     HybridSemanticJudge,
     LiveHttpAgent,
@@ -665,20 +666,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--fail-on-block", action="store_true", help="Return exit code 5 if admission verdict is BLOCK.")
     parser.add_argument("--output-dir", type=Path, default=Path("eval_runs"))
     parser.add_argument("--generate-report", action="store_true", help="Refresh eval_runs/reports/ bundle after wheel finishes.")
+    parser.add_argument(
+        "--gemini-priority",
+        action="store_true",
+        help="Run sequentially across Gemini 4 priority models (gemini-4-carbon, gemini-4-neon, gemini-4-argon).",
+    )
+    parser.add_argument(
+        "--long-horizon",
+        action="store_true",
+        help="Focus wheel battery on long-horizon multi-turn Crescendo / Many-Shot templates and 2-hop relays.",
+    )
     parser.add_argument("--watch-ollama", action="store_true", help="Continuously watch local Ollama for new models and auto-run them.")
     parser.add_argument("--poll-interval", type=float, default=15.0)
     args = parser.parse_args(argv)
+
+    benign_subset = list(args.benign_templates) if args.benign_templates else None
+    if args.long_horizon and benign_subset is None:
+        benign_subset = [
+            "long_horizon_crescendo_drift",
+            "long_horizon_many_shot_context",
+            "drift_tone_shift_multiturn",
+            "drift_scope_creep_multiturn",
+        ]
 
     cfg = WheelStageConfig(
         include_indirect_paired=not args.skip_indirect,
         include_benign_suite=not args.skip_benign,
         protocols=tuple(ProtocolFormat) if args.all_protocols else (None,),
-        include_relay_ablation=args.relay_ablation,
+        include_relay_ablation=args.relay_ablation or args.long_horizon,
         cycles=max(1, args.cycles),
         max_failure_rate_for_admit=args.max_fail_rate,
         stop_on_gate_fail=args.stop_on_fail,
         indirect_template_ids=tuple(args.templates) if args.templates else None,
-        benign_template_ids=tuple(args.benign_templates) if args.benign_templates else None,
+        benign_template_ids=tuple(benign_subset) if benign_subset else None,
     )
 
     def _build_agent(model_id: str) -> tuple[TargetAgent, ResponsePatternClassifier, str]:
@@ -772,29 +792,45 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("[wheel] Stopped watching.")
             return 0
 
-    model_id = args.model.strip()
-    if not model_id and args.provider == "ollama":
-        installed = list_ollama_models(args.base_url or DEFAULT_BASE_URLS[ProviderKind.OLLAMA])
-        model_id = installed[0] if installed else "qwen2.5-coder:7b"
+    if args.gemini_priority and args.provider in ("gemini", "ollama"):
+        if args.provider == "ollama" and not args.model.strip():
+            # Allow `work121-wheel --gemini-priority` without repeating `--provider gemini`.
+            target_models = list(PRIORITY_GEMINI_MODELS)
+            args.provider = "gemini"
+        elif args.provider == "gemini":
+            target_models = list(PRIORITY_GEMINI_MODELS)
+        else:
+            target_models = [args.model.strip()]
+    else:
+        model_id = args.model.strip()
+        if not model_id and args.provider == "ollama":
+            installed = list_ollama_models(args.base_url or DEFAULT_BASE_URLS[ProviderKind.OLLAMA])
+            model_id = installed[0] if installed else "qwen2.5-coder:7b"
+        target_models = [model_id]
 
-    agent, clf, j_id = _build_agent(model_id)
-    report = ModelHamsterWheel.enter(
-        agent,
-        config=cfg,
-        classifier=clf,
-        judge_id=j_id,
-        output_dir=args.output_dir,
-        on_event=_printer,
-    )
+    blocked_any = False
+    for target_model in target_models:
+        agent, clf, j_id = _build_agent(target_model)
+        report = ModelHamsterWheel.enter(
+            agent,
+            config=cfg,
+            classifier=clf,
+            judge_id=j_id,
+            output_dir=args.output_dir,
+            on_event=_printer,
+        )
+        print(
+            f"\n[wheel] FINAL ADMISSION VERDICT for {report.agent_key}: {report.admission_verdict} | "
+            f"safe_rate={report.overall_safe_rate:.2f} fail_rate={report.overall_failure_rate:.2f} "
+            f"paired_reg={report.overall_paired_regression_rate} mcp_calls={report.total_mcp_tool_calls}"
+        )
+        if report.admission_verdict == "BLOCK":
+            blocked_any = True
+
     if args.generate_report:
         EmpiricalReportGenerator.export_research_bundle(args.output_dir, args.output_dir / "reports")
 
-    print(
-        f"\n[wheel] FINAL ADMISSION VERDICT for {report.agent_key}: {report.admission_verdict} | "
-        f"safe_rate={report.overall_safe_rate:.2f} fail_rate={report.overall_failure_rate:.2f} "
-        f"paired_reg={report.overall_paired_regression_rate} mcp_calls={report.total_mcp_tool_calls}"
-    )
-    if args.fail_on_block and report.admission_verdict == "BLOCK":
+    if args.fail_on_block and blocked_any:
         return 5
     return 0
 
