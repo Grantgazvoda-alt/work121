@@ -401,6 +401,7 @@ class WorkbenchState:
         runs_dir: Optional[Path] = None,
         corpus_dir: Optional[Path] = None,
         live_weather: bool = True,
+        live_threat_intel: Optional[bool] = None,
         discover_live: bool = True,
     ) -> None:
         self.runs_dir = (runs_dir or (BASE_DIR / "eval_runs")).resolve()
@@ -413,12 +414,14 @@ class WorkbenchState:
             runs_dir=self.runs_dir,
             corpus_dir=self.corpus_dir,
             live_weather=live_weather,
+            live_threat_intel=live_threat_intel,
         )
         self.clean_mcp = LocalMcpServer(
             include_indirect_perturbations=False,
             runs_dir=self.runs_dir,
             corpus_dir=self.corpus_dir,
             live_weather=live_weather,
+            live_threat_intel=live_threat_intel,
         )
         self.benign_lib = BenignTemplateLibrary()
         self.indirect_lib: IndirectInputClassifier = build_default_template_library()
@@ -642,6 +645,7 @@ def create_backend_app(
     runs_dir: Optional[Path] = None,
     corpus_dir: Optional[Path] = None,
     live_weather: bool = True,
+    live_threat_intel: Optional[bool] = None,
     discover_live: bool = True,
 ) -> Starlette:
     """Create the unified work121 ASGI application serving Web UI, REST API, WebSockets, and MCP."""
@@ -649,6 +653,7 @@ def create_backend_app(
         runs_dir=runs_dir,
         corpus_dir=corpus_dir,
         live_weather=live_weather,
+        live_threat_intel=live_threat_intel,
         discover_live=discover_live,
     )
 
@@ -2124,7 +2129,20 @@ def create_backend_app(
             }
             for g in OwaspDefensiveCatalog.list_all()
         ]
-        return JSONResponse({"catalog": items})
+        techniques = [
+            {
+                "technique_id": t.technique_id,
+                "name": t.name,
+                "family": t.family,
+                "frameworks": list(t.frameworks),
+                "risk_tier": t.risk_tier,
+                "mechanism_summary": t.mechanism_summary,
+                "defensive_controls": list(t.defensive_controls),
+                "work121_coverage": t.work121_coverage,
+            }
+            for t in OwaspDefensiveCatalog.list_technique_references()
+        ]
+        return JSONResponse({"catalog": items, "technique_taxonomy": techniques})
 
     async def api_owasp_audit(request: Request) -> JSONResponse:
         run_id = request.query_params.get("run_id")

@@ -31,6 +31,20 @@ class OwaspDefenseGuidance:
 
 
 @dataclass(frozen=True)
+class AttackTechniqueReference:
+    """Defensive reference entry mapping prompt-injection / jailbreak families to standards & controls."""
+
+    technique_id: str
+    name: str
+    family: str
+    frameworks: tuple[str, ...]
+    risk_tier: str
+    mechanism_summary: str
+    defensive_controls: tuple[str, ...]
+    work121_coverage: str
+
+
+@dataclass(frozen=True)
 class RemediationRecommendation:
     """Actionable defensive hardening recommendation produced from a VulnerabilityProfile."""
 
@@ -47,6 +61,109 @@ class RemediationRecommendation:
 
 class OwaspDefensiveCatalog:
     """Maps response-pattern categories to OWASP LLM Top 10 architectural documentation."""
+
+    _TECHNIQUE_REFERENCES: tuple[AttackTechniqueReference, ...] = (
+        AttackTechniqueReference(
+            technique_id="TECH-01-INSTRUCTION-OVERRIDE",
+            name="Instruction Override & Goal Hijacking",
+            family="Direct & Indirect Override",
+            frameworks=("OWASP LLM01:2025", "OWASP Agentic ASI01:2026", "MITRE ATLAS AML.T0051", "NIST AI 100-2e2025"),
+            risk_tier="HIGH",
+            mechanism_summary="Imperative text inside untrusted inputs or data fields asserts higher authority than prior system rules.",
+            defensive_controls=("Instruction hierarchy", "Structural <untrusted_data> delimiter isolation", "Output schema gate"),
+            work121_coverage="BenignTemplateLibrary, DefensiveBoundaryValidator, HardenedBoundaryGate",
+        ),
+        AttackTechniqueReference(
+            technique_id="TECH-02-SPECIAL-TOKEN-STI",
+            name="Special Token / ChatML Delimiter Injection",
+            family="Protocol Framing & Serializer",
+            frameworks=("OWASP LLM01:2025", "MITRE ATLAS AML.T0051", "NIST AI 100-2e2025"),
+            risk_tier="HIGH",
+            mechanism_summary="Injects raw chat-template tokens (<|im_start|>, <|im_end|>, [INST], <|system|>) so concatenated text is parsed as privileged role turns.",
+            defensive_controls=("Server-side control token neutralization", "Typed provider role arrays instead of flat string formatting"),
+            work121_coverage="ProtocolRelayGateway, ProtocolSerializer, TPL-04-CHATML-RELAY, DefensiveBoundaryValidator",
+        ),
+        AttackTechniqueReference(
+            technique_id="TECH-03-RAG-THREAT-INTEL",
+            name="RAG, Email & Threat-Intel Indirect Injection",
+            family="Indirect Data Plane",
+            frameworks=("OWASP LLM01:2025", "OWASP Agentic ASI01:2026", "MITRE ATLAS AML.T0051"),
+            risk_tier="CRITICAL",
+            mechanism_summary="Adversarial directives hidden in retrieved corpus chunks, MalwareBazaar IOC comments, YARA metadata, or threat writeups hijack downstream summarization.",
+            defensive_controls=("Metadata-only lookup", "Privilege-separated reader", "Gateway envelope wrapping", "Strip embedded closing tags"),
+            work121_coverage="lookup_threat_intel, search_research_corpus (C1-C7), RELAY-04-THREAT-INTEL-SOC-TRIAGE",
+        ),
+        AttackTechniqueReference(
+            technique_id="TECH-04-MARKDOWN-EXFIL",
+            name="Zero-Click Markdown Image & Reference-Link Exfiltration",
+            family="Indirect Exfiltration Channel",
+            frameworks=("OWASP LLM01:2025", "OWASP LLM05:2025", "MITRE ATLAS AML.T0051"),
+            risk_tier="HIGH",
+            mechanism_summary="Injects ![alt](https://...) or reference link targets encoding sensitive context into query parameters fetched automatically on UI render.",
+            defensive_controls=("Block/defang untrusted external markdown image URLs", "Strict JSON schema outputs without freeform markdown rendering"),
+            work121_coverage="DefensiveBoundaryValidator, threat_intel.defang_iocs, corpus/C7_prompt_injection_atlas_reference.md",
+        ),
+        AttackTechniqueReference(
+            technique_id="TECH-05-MCP-CONFUSED-DEPUTY",
+            name="MCP Tool Poisoning & Confused Deputy",
+            family="Tool & Agentic Agency",
+            frameworks=("OWASP LLM08:2025", "OWASP Agentic ASI01:2026", "MITRE ATLAS AML.T0051"),
+            risk_tier="CRITICAL",
+            mechanism_summary="Adversarial instructions in MCP tool descriptions or tool responses steer privileged tool execution (Cross-Plugin Request Forgery).",
+            defensive_controls=("Strict JSON Schema allowlists", "Capability scoping", "Clean vs perturbed MCP parity benchmarking"),
+            work121_coverage="LocalMcpServer (/mcp vs /mcp/clean), TPL-07-MCP-TOOL-SCHEMA, validate_inter_agent_message",
+        ),
+        AttackTechniqueReference(
+            technique_id="TECH-06-UNICODE-SMUGGLING",
+            name="Unicode Tag Block (U+E0000), Zero-Width & Bidi Smuggling",
+            family="Encoding & Obfuscation",
+            frameworks=("OWASP LLM01:2025", "MITRE ATLAS AML.T0051", "NIST AI 100-2e2025"),
+            risk_tier="HIGH",
+            mechanism_summary="Encodes instructions inside invisible Unicode tag code points (U+E0000..U+E007F), zero-width joiners, or bidi overrides hidden from visual review.",
+            defensive_controls=("Strip Tag-block U+E0000..U+E007F, zero-width, and bidi characters", "NFKC normalization", "Rust + Python wire UTF-8 gates"),
+            work121_coverage="DefensiveBoundaryValidator, ProtocolRelayGateway, threat_intel.sanitize_intel_text, native/src/main.rs",
+        ),
+        AttackTechniqueReference(
+            technique_id="TECH-07-POLICY-PUPPETRY-FRAME",
+            name="Policy Puppetry (XML/JSON/INI) & Nested Virtualization",
+            family="Semantic Frame & Roleplay",
+            frameworks=("OWASP LLM07:2025", "OWASP LLM08:2025", "MITRE ATLAS AML.T0054"),
+            risk_tier="HIGH",
+            mechanism_summary="Wraps policy overrides inside synthetic XML/INI configs, fictional scripts, or DAN/Skeleton Key personas to bypass surface refusals.",
+            defensive_controls=("Frame-invariant semantic judging", "Reject schema-breaking wrappers", "Prompt-leak output guards"),
+            work121_coverage="BenignTemplateLibrary (semantic_policy_puppetry_boundary, frame_roleplay_scope_boundary), HybridSemanticJudge",
+        ),
+        AttackTechniqueReference(
+            technique_id="TECH-08-MULTI-TURN-CRESCENDO",
+            name="Crescendo, Many-Shot & Echo Chamber Escalation",
+            family="Multi-Turn & Context Poisoning",
+            frameworks=("OWASP LLM07:2025", "MITRE ATLAS AML.T0054", "NIST AI 100-2e2025"),
+            risk_tier="HIGH",
+            mechanism_summary="Gradually steers benign dialogue across turns, seeds poisoned context (Echo Chamber), or packs synthetic shots to erode alignment.",
+            defensive_controls=("Turn-by-turn PolicyAnchor / EmbeddingAlignmentScorer drift-slope tracking", "Context re-anchoring"),
+            work121_coverage="drift_tone_shift_multiturn, SusceptibilityMapper.drift_slope, ModelHamsterWheel",
+        ),
+        AttackTechniqueReference(
+            technique_id="TECH-09-ENCODING-CIPHER-SPLIT",
+            name="Payload Splitting, CipherChat, ArtPrompt & FlipAttack",
+            family="Encoding & Obfuscation",
+            frameworks=("OWASP LLM01:2025", "MITRE ATLAS AML.T0054"),
+            risk_tier="MODERATE",
+            mechanism_summary="Splits restricted strings across variables or encodes payloads in Base64/ciphers/ASCII art/word flips to bypass keyword filters.",
+            defensive_controls=("Decode-and-normalize inspection", "Semantic invariant verification rather than keyword blocklists alone"),
+            work121_coverage="HardenedBoundaryGate, Susceptibility & Stats (Fisher / McNemar exact tests)",
+        ),
+        AttackTechniqueReference(
+            technique_id="TECH-10-MULTIMODAL-REASONING",
+            name="Visual Typographic Injection & Reasoning-Trace (H-CoT) Steering",
+            family="Multimodal & Reasoning Models",
+            frameworks=("OWASP LLM01:2025", "MITRE ATLAS AML.T0051", "AML.T0054"),
+            risk_tier="HIGH",
+            mechanism_summary="Embeds directives inside rendered images/charts (OCR path) or injects fake reasoning checkpoints in exposed CoT traces.",
+            defensive_controls=("Typed multimodal boundaries", "<think> trace stripping before invariant evaluation", "Real-PNG probe regression"),
+            work121_coverage="TPL-03-TYPED-MULTIMODAL, IndirectInvariantJudge._strip_reasoning, generate_chart_asset",
+        ),
+    )
 
     _CATALOG: dict[PatternCategory, OwaspDefenseGuidance] = {
         PatternCategory.INDIRECT_ADVERSARIAL_SUFFIX: OwaspDefenseGuidance(
@@ -126,6 +243,10 @@ class OwaspDefensiveCatalog:
         return [cls._CATALOG[c] for c in PatternCategory]
 
     @classmethod
+    def list_technique_references(cls) -> list[AttackTechniqueReference]:
+        return list(cls._TECHNIQUE_REFERENCES)
+
+    @classmethod
     def generate_remediation_plan(
         cls, profiles: Iterable[VulnerabilityProfile]
     ) -> list[RemediationRecommendation]:
@@ -161,6 +282,20 @@ class BoundaryAuditResult:
 class DefensiveBoundaryValidator:
     """Defensive middleware for validating untrusted context isolation and inter-agent schemas."""
 
+    _INVISIBLE_UNICODE_RE = re.compile(
+        r"[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff\U000e0000-\U000e007f]"
+    )
+    _SPECIAL_TOKEN_RE = re.compile(
+        r"(<\|im_start\|>|<\|im_end\|>|<\|system\|>|<\|start_header_id\|>|<\|end_header_id\|>|<\|eot_id\|>|\[/?INST\])",
+        re.IGNORECASE,
+    )
+    _MD_EXFIL_IMAGE_RE = re.compile(
+        r"!\[([^\]]*)\]\(\s*(https?://[^)]+)\)", re.IGNORECASE
+    )
+    _MD_REF_DEF_RE = re.compile(
+        r"^(\s*\[[^\]]+\]:\s*)(https?://\S+)", re.IGNORECASE | re.MULTILINE
+    )
+
     def __init__(
         self,
         *,
@@ -173,10 +308,27 @@ class DefensiveBoundaryValidator:
         self._allowed_intents = allowed_intents
 
     def isolate_untrusted_context(self, untrusted_text: str) -> BoundaryAuditResult:
-        """Wraps untrusted external data in structural tags and neutralizes tag-closing collisions."""
+        """Wraps untrusted external data in structural tags and neutralizes tag/token/unicode smuggling."""
         closing_re = re.compile(rf"</\s*{re.escape(self._data_tag)}\s*>", flags=re.IGNORECASE)
         findings: list[str] = []
         cleaned = str(untrusted_text)
+
+        if self._INVISIBLE_UNICODE_RE.search(cleaned):
+            findings.append("stripped_invisible_unicode_controls")
+            cleaned = self._INVISIBLE_UNICODE_RE.sub("", cleaned)
+
+        if self._SPECIAL_TOKEN_RE.search(cleaned):
+            findings.append("neutralized_special_template_tokens")
+            cleaned = self._SPECIAL_TOKEN_RE.sub("[SANITIZED_CTRL_TOKEN]", cleaned)
+
+        if self._MD_EXFIL_IMAGE_RE.search(cleaned) or self._MD_REF_DEF_RE.search(cleaned):
+            findings.append("defanged_markdown_exfil_link")
+            cleaned = self._MD_EXFIL_IMAGE_RE.sub(
+                r"![defanged-image:\1](blocked-external-url)", cleaned
+            )
+            cleaned = self._MD_REF_DEF_RE.sub(
+                lambda m: m.group(1) + m.group(2).replace("http", "hxxp", 1), cleaned
+            )
 
         if closing_re.search(cleaned):
             findings.append("neutralized_embedded_closing_delimiter")

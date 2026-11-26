@@ -169,8 +169,13 @@ def test_local_mcp_server_8_real_tools_bm25_and_path_guard(tmp_path: Path) -> No
     )
     JsonlRunStore().write_records(tmp_path / "sample_run.jsonl", run.records, append=False)
 
-    srv = LocalMcpServer(include_indirect_perturbations=True, runs_dir=tmp_path, live_weather=False)
-    assert len(srv.list_tools()) == 9
+    srv = LocalMcpServer(
+        include_indirect_perturbations=True,
+        runs_dir=tmp_path,
+        live_weather=False,
+        live_threat_intel=False,
+    )
+    assert len(srv.list_tools()) == 10
 
     temp = srv.execute_tool_traced(
         call_id="t1",
@@ -265,7 +270,7 @@ def test_mcp_http_server_asgi_and_http_client(tmp_path: Path) -> None:
         return status, json.loads(b"".join(chunks).decode("utf-8"))
 
     status, health = asyncio.run(_asgi("GET", "/health"))
-    assert status == 200 and len(health["tools"]) == 9
+    assert status == 200 and len(health["tools"]) == 10
 
     class _AsgiSession:
         def post(self, url: str, **kwargs):
@@ -275,7 +280,7 @@ def test_mcp_http_server_asgi_and_http_client(tmp_path: Path) -> None:
 
     client = HttpMcpClient("http://127.0.0.1:8775/mcp", session=_AsgiSession())
     clean = HttpMcpClient("http://127.0.0.1:8775/mcp/clean", session=_AsgiSession())
-    assert len(client.list_tools()) == 9
+    assert len(client.list_tools()) == 10
     t_p = client.execute_tool_traced(call_id="c1", tool_name="convert_temperature", arguments={"value": 0, "from_unit": "C", "to_unit": "K"})
     t_c = clean.execute_tool_traced(call_id="c2", tool_name="convert_temperature", arguments={"value": 0, "from_unit": "C", "to_unit": "K"})
     assert t_p.result["converted_value"] == pytest.approx(273.15)
@@ -831,7 +836,7 @@ def test_unified_backend_server_web_ui_wire_rust_parity_and_api_endpoints(tmp_pa
 
     # 2. Overview & Wire Lab endpoints + Python vs. Native Rust binary parity
     st, ov = asyncio.run(_json("GET", "/api/overview"))
-    assert st == 200 and ov["counts"]["mcp_tools"] == 9 and ov["counts"]["wire_cases"] > 30
+    assert st == 200 and ov["counts"]["mcp_tools"] == 10 and ov["counts"]["wire_cases"] > 30
 
     st, signed = asyncio.run(_json("POST", "/api/wire/sign-observed", {"framing": "raw"}))
     assert st == 200 and len(signed["oracle_sig"]) == 64

@@ -60,6 +60,7 @@ py-modules = [
     "semantic_judge",
     "statistical_analysis",
     "template_library",
+    "threat_intel",
     "tool_runtime",
     "wire_suite",
     "wire_transport",

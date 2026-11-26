@@ -39,7 +39,7 @@ const ROUTES = {
   },
   "mcp-multimodal": {
     title: "MCP Tools & Multimodal",
-    subtitle: "Live 9-tool JSON-RPC 2.0 loops, Pillow PNG probes, and disk BM25 corpus",
+    subtitle: "Live 10-tool JSON-RPC 2.0 loops (incl. metadata-only MalwareBazaar/vx-underground triage), Pillow PNG probes, and BM25 corpus",
     render: renderMcpPage,
   },
   "relay-lab": {
