@@ -9,6 +9,7 @@ import os
 import re
 import time
 from typing import Any, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -29,6 +30,7 @@ class ProviderKind(str, Enum):
     OPENAI_COMPATIBLE = "openai_compatible"
     ANTHROPIC = "anthropic"
     GEMINI = "gemini"
+    VERTEX_EXPRESS = "vertex_express"
     OLLAMA = "ollama"
 
 
@@ -36,6 +38,7 @@ DEFAULT_BASE_URLS: dict[ProviderKind, str] = {
     ProviderKind.OPENAI_COMPATIBLE: "https://api.openai.com/v1",
     ProviderKind.ANTHROPIC: "https://api.anthropic.com",
     ProviderKind.GEMINI: "https://generativelanguage.googleapis.com",
+    ProviderKind.VERTEX_EXPRESS: "https://aiplatform.googleapis.com",
     ProviderKind.OLLAMA: "http://127.0.0.1:11434",
 }
 
@@ -43,6 +46,13 @@ ENV_KEY_NAMES: dict[ProviderKind, tuple[str, ...]] = {
     ProviderKind.OPENAI_COMPATIBLE: ("OPENAI_API_KEY",),
     ProviderKind.ANTHROPIC: ("ANTHROPIC_API_KEY",),
     ProviderKind.GEMINI: ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    ProviderKind.VERTEX_EXPRESS: (
+        "VERTEX_API_KEY",
+        "GOOGLE_VERTEX_API_KEY",
+        "GOOGLE_CLOUD_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+    ),
     ProviderKind.OLLAMA: (),
 }
 
@@ -52,7 +62,48 @@ PRIORITY_GEMINI_MODELS: tuple[str, ...] = (
     "gemini-4-argon",
 )
 
+FREE_GEMINI_MODELS: tuple[str, ...] = (
+    "gemini-4-hydrogen",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+)
+
+_VERTEX_DISCOVERY_ENV_KEYS: tuple[str, ...] = (
+    "VERTEX_API_KEY",
+    "GOOGLE_VERTEX_API_KEY",
+    "GOOGLE_CLOUD_API_KEY",
+)
+
 _GEMINI_ELEMENT_RE = re.compile(r"\bgemini[-_ ]?(?:4[-_ ]?)?(argon|carbon|neon|hydrogen)\b", re.I)
+
+
+def is_vertex_express_endpoint(provider: ProviderKind, base_url: str = "") -> bool:
+    """Return True when traffic targets Vertex AI Express Mode / Gemini Enterprise endpoints."""
+    return provider == ProviderKind.VERTEX_EXPRESS or "aiplatform.googleapis.com" in (base_url or "").lower()
+
+
+def build_gemini_endpoint_url(
+    provider: ProviderKind,
+    base_url: str,
+    model_id: str,
+    action: str = "",
+) -> str:
+    """Resolve Gemini Developer API vs. Vertex AI Express Mode model endpoint URL."""
+    base = base_url.rstrip("/")
+    encoded_model = quote(model_id.strip(), safe="")
+    if is_vertex_express_endpoint(provider, base):
+        if base.endswith("/publishers/google"):
+            prefix = f"{base}/models/{encoded_model}"
+        elif base.endswith("/v1") or base.endswith("/v1beta1"):
+            prefix = f"{base}/publishers/google/models/{encoded_model}"
+        else:
+            prefix = f"{base}/v1/publishers/google/models/{encoded_model}"
+    else:
+        if base.endswith("/v1beta") or base.endswith("/v1"):
+            prefix = f"{base}/models/{encoded_model}"
+        else:
+            prefix = f"{base}/v1beta/models/{encoded_model}"
+    return f"{prefix}:{action}" if action else prefix
 
 
 def extract_gemini_parts_text(parts: Any) -> str:
@@ -319,12 +370,33 @@ class LiveHttpAgent:
                 resp.raise_for_status()
                 return True, f"OpenAI-compatible endpoint reachable at {base}."
 
-            if provider == ProviderKind.GEMINI:
+            if provider in (ProviderKind.GEMINI, ProviderKind.VERTEX_EXPRESS):
+                is_vertex = is_vertex_express_endpoint(provider, base)
                 if not api_key:
-                    return False, "Missing GEMINI_API_KEY / GOOGLE_API_KEY."
+                    hint = (
+                        "VERTEX_API_KEY / GOOGLE_VERTEX_API_KEY / GOOGLE_API_KEY"
+                        if is_vertex
+                        else "GEMINI_API_KEY / GOOGLE_API_KEY"
+                    )
+                    return False, f"Missing {hint}."
+                headers = {"x-goog-api-key": api_key}
+                if is_vertex:
+                    resp = self._session.post(
+                        build_gemini_endpoint_url(
+                            provider, base, self._config.model_id, "countTokens"
+                        ),
+                        headers={"Content-Type": "application/json", **headers},
+                        json={"contents": [{"role": "user", "parts": [{"text": "ping"}]}]},
+                        timeout=10.0,
+                    )
+                    resp.raise_for_status()
+                    return (
+                        True,
+                        f"Vertex AI Express model '{self._config.model_id}' verified via countTokens.",
+                    )
                 resp = self._session.get(
-                    f"{base}/v1beta/models/{self._config.model_id}",
-                    headers={"x-goog-api-key": api_key},
+                    build_gemini_endpoint_url(provider, base, self._config.model_id),
+                    headers=headers,
                     timeout=10.0,
                 )
                 resp.raise_for_status()
@@ -492,7 +564,7 @@ class LiveHttpAgent:
             return self._call_openai(system_prompt, conversation)
         if provider == ProviderKind.ANTHROPIC:
             return self._call_anthropic(system_prompt, conversation)
-        if provider == ProviderKind.GEMINI:
+        if provider in (ProviderKind.GEMINI, ProviderKind.VERTEX_EXPRESS):
             return self._call_gemini(system_prompt, conversation)
         if provider == ProviderKind.OLLAMA:
             return self._call_ollama(system_prompt, conversation)
@@ -607,22 +679,62 @@ class LiveHttpAgent:
             int(usage.get("output_tokens", 0)),
         )
 
-    def _gemini_generation_config(self) -> dict[str, Any]:
+    def _gemini_request_context(self, action: str = "generateContent") -> tuple[str, dict[str, str], bool]:
+        """Resolve URL, headers, and Vertex Express mode flag for Gemini/Vertex calls."""
+        provider = (
+            self._config.provider
+            if self._config.provider in (ProviderKind.GEMINI, ProviderKind.VERTEX_EXPRESS)
+            else ProviderKind.GEMINI
+        )
+        base = self._config.effective_base_url
+        is_vertex = is_vertex_express_endpoint(provider, base)
+        api_key = resolve_api_key(provider, self._config.api_key)
+        if not api_key:
+            if is_vertex:
+                raise ValueError(
+                    "VERTEX_API_KEY, GOOGLE_VERTEX_API_KEY, GOOGLE_CLOUD_API_KEY, or GOOGLE_API_KEY is required for Vertex Express."
+                )
+            raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY is required for Gemini provider.")
+        url = build_gemini_endpoint_url(provider, base, self._config.model_id, action)
+        headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+        return url, headers, is_vertex
+
+    def _gemini_generation_config(self, *, is_vertex: bool = False) -> dict[str, Any]:
         cfg: dict[str, Any] = {
             "temperature": self._config.temperature,
             "maxOutputTokens": self._config.max_tokens,
         }
         if self._config.thinking_level:
-            cfg["thinkingConfig"] = {"thinkingLevel": self._config.thinking_level}
+            level = (
+                self._config.thinking_level.upper()
+                if is_vertex
+                else self._config.thinking_level
+            )
+            cfg["thinkingConfig"] = {"thinkingLevel": level}
         return cfg
+
+    def _build_gemini_payload(
+        self,
+        system_prompt: str,
+        contents: list[dict[str, Any]],
+        *,
+        is_vertex: bool,
+        tools: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        sys_key = "systemInstruction" if is_vertex else "system_instruction"
+        payload: dict[str, Any] = {
+            sys_key: {"parts": [{"text": system_prompt}]},
+            "contents": contents,
+            "generationConfig": self._gemini_generation_config(is_vertex=is_vertex),
+        }
+        if tools is not None:
+            payload["tools"] = tools
+        return payload
 
     def _call_gemini(
         self, system_prompt: str, conversation: list[dict[str, str]]
     ) -> tuple[str, int, int]:
-        api_key = resolve_api_key(ProviderKind.GEMINI, self._config.api_key)
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY is required for Gemini provider.")
-
+        url, headers, is_vertex = self._gemini_request_context("generateContent")
         contents = [
             {
                 "role": "model" if msg["role"] == "assistant" else "user",
@@ -630,19 +742,8 @@ class LiveHttpAgent:
             }
             for msg in conversation
         ]
-        payload = {
-            "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": contents,
-            "generationConfig": self._gemini_generation_config(),
-        }
-        data = self._post_json_with_retry(
-            f"{self._config.effective_base_url}/v1beta/models/{self._config.model_id}:generateContent",
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": api_key,
-            },
-            payload=payload,
-        )
+        payload = self._build_gemini_payload(system_prompt, contents, is_vertex=is_vertex)
+        data = self._post_json_with_retry(url, headers=headers, payload=payload)
         candidates = data.get("candidates") or []
         parts = candidates[0].get("content", {}).get("parts", []) if (candidates and isinstance(candidates[0], dict)) else []
         text = extract_gemini_parts_text(parts)
@@ -711,7 +812,7 @@ class LiveHttpAgent:
             final_text, traces, rounds, p_tok, c_tok = self._tool_loop_anthropic(
                 system_prompt, user_prompt, active_tools, mcp_server, max_rounds
             )
-        elif provider == ProviderKind.GEMINI:
+        elif provider in (ProviderKind.GEMINI, ProviderKind.VERTEX_EXPRESS):
             final_text, traces, rounds, p_tok, c_tok = self._tool_loop_gemini(
                 system_prompt, user_prompt, active_tools, mcp_server, max_rounds
             )
@@ -997,10 +1098,7 @@ class LiveHttpAgent:
     def _tool_loop_gemini(
         self, system_prompt, user_prompt, active_tools, mcp_server: McpToolBackend, max_rounds: int
     ) -> tuple[str, list[ToolCallTrace], int, int, int]:
-        api_key = resolve_api_key(ProviderKind.GEMINI, self._config.api_key)
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY is required for Gemini provider.")
-        headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+        url, headers, is_vertex = self._gemini_request_context("generateContent")
         contents: list[dict[str, Any]] = [
             {"role": "user", "parts": [{"text": user_prompt}]}
         ]
@@ -1011,14 +1109,14 @@ class LiveHttpAgent:
 
         for round_idx in range(1, max_rounds + 1):
             data = self._post_json_with_retry(
-                f"{self._config.effective_base_url}/v1beta/models/{self._config.model_id}:generateContent",
+                url,
                 headers=headers,
-                payload={
-                    "system_instruction": {"parts": [{"text": system_prompt}]},
-                    "contents": contents,
-                    "tools": tools_payload,
-                    "generationConfig": self._gemini_generation_config(),
-                },
+                payload=self._build_gemini_payload(
+                    system_prompt,
+                    contents,
+                    is_vertex=is_vertex,
+                    tools=tools_payload,
+                ),
             )
             usage = data.get("usageMetadata", {})
             p_tok += int(usage.get("promptTokenCount", 0))
@@ -1154,16 +1252,14 @@ class LiveHttpAgent:
             text = "\n".join(str(b.get("text", "")) for b in blocks if isinstance(b, dict) and b.get("type") == "text")
             usage = data.get("usage", {})
             p_tok, c_tok = int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0))
-        elif provider == ProviderKind.GEMINI:
-            api_key = resolve_api_key(ProviderKind.GEMINI, self._config.api_key)
-            if not api_key:
-                raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY is required for Gemini provider.")
+        elif provider in (ProviderKind.GEMINI, ProviderKind.VERTEX_EXPRESS):
+            url, headers, is_vertex = self._gemini_request_context("generateContent")
             data = self._post_json_with_retry(
-                f"{self._config.effective_base_url}/v1beta/models/{self._config.model_id}:generateContent",
-                headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-                payload={
-                    "system_instruction": {"parts": [{"text": system_prompt}]},
-                    "contents": [
+                url,
+                headers=headers,
+                payload=self._build_gemini_payload(
+                    system_prompt,
+                    [
                         {
                             "role": "user",
                             "parts": [
@@ -1172,8 +1268,8 @@ class LiveHttpAgent:
                             ],
                         }
                     ],
-                    "generationConfig": self._gemini_generation_config(),
-                },
+                    is_vertex=is_vertex,
+                ),
             )
             candidates = data.get("candidates") or []
             if not candidates:
@@ -1304,6 +1400,20 @@ def discover_live_agents(
                         provider=ProviderKind.GEMINI,
                         model_id=gem_model,
                         model_version="live-gemini",
+                    ),
+                    session=session,
+                )
+            )
+    if any(os.environ.get(k, "").strip() for k in _VERTEX_DISCOVERY_ENV_KEYS):
+        explicit_vertex = os.environ.get("VERTEX_MODEL", "").strip()
+        vertex_models = list(dict.fromkeys(([explicit_vertex] if explicit_vertex else []) + list(PRIORITY_GEMINI_MODELS)))
+        for v_model in vertex_models:
+            agents.append(
+                LiveHttpAgent(
+                    LiveProviderConfig(
+                        provider=ProviderKind.VERTEX_EXPRESS,
+                        model_id=v_model,
+                        model_version="live-vertex-express",
                     ),
                     session=session,
                 )

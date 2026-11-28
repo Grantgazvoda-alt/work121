@@ -25,12 +25,27 @@ LITELLM_DEFAULT_BASE = "http://127.0.0.1:4000"
 LMSTUDIO_DEFAULT_BASE = "http://127.0.0.1:1234"
 ANTHROPIC_DEFAULT_BASE = "https://api.anthropic.com"
 GEMINI_DEFAULT_BASE = "https://generativelanguage.googleapis.com"
+VERTEX_EXPRESS_DEFAULT_BASE = "https://aiplatform.googleapis.com"
 ANTHROPIC_VERSION = "2023-06-01"
 
 PRIORITY_GEMINI_MODELS: tuple[str, ...] = (
     "gemini-4-carbon",
     "gemini-4-neon",
     "gemini-4-argon",
+)
+
+FREE_GEMINI_MODELS: tuple[str, ...] = (
+    "gemini-4-hydrogen",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+)
+
+VERTEX_KEY_ENVS: tuple[str, ...] = (
+    "VERTEX_API_KEY",
+    "GOOGLE_VERTEX_API_KEY",
+    "GOOGLE_CLOUD_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
 )
 
 PROVIDER_CHOICES = (
@@ -42,6 +57,7 @@ PROVIDER_CHOICES = (
     "ollama-openai",
     "anthropic",
     "gemini",
+    "vertex_express",
 )
 
 
@@ -52,6 +68,7 @@ class ProviderKind:
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GEMINI = "gemini"
+    VERTEX_EXPRESS = "vertex_express"
 
 
 class LiveProviderError(RuntimeError):
@@ -205,6 +222,23 @@ def discover_live_agents(*, timeout: float = 0.4) -> tuple[LiveAgentSpec, ...]:
                 base_url=_base_from_env("GEMINI_BASE_URL", GEMINI_DEFAULT_BASE),
                 model=_env("GEMINI_MODEL") or "gemini-4-neon",
                 key_env="GEMINI_API_KEY",
+                architecture_family="gemini-generate",
+                reachable=None,
+            )
+        )
+
+    vertex_env = next(
+        (name for name in ("VERTEX_API_KEY", "GOOGLE_VERTEX_API_KEY", "GOOGLE_CLOUD_API_KEY") if _env(name)),
+        None,
+    )
+    if vertex_env:
+        found.append(
+            LiveAgentSpec(
+                provider="vertex_express",
+                kind=ProviderKind.VERTEX_EXPRESS,
+                base_url=_base_from_env("VERTEX_BASE_URL", VERTEX_EXPRESS_DEFAULT_BASE),
+                model=_env("VERTEX_MODEL") or "gemini-4-neon",
+                key_env=vertex_env,
                 architecture_family="gemini-generate",
                 reachable=None,
             )
@@ -376,6 +410,12 @@ class LiveHttpAgent:
             )
         return self._parse_response(body)
 
+    def _is_vertex_express(self) -> bool:
+        return (
+            self._spec.kind == ProviderKind.VERTEX_EXPRESS
+            or "aiplatform.googleapis.com" in self._spec.base_url.lower()
+        )
+
     def _endpoint(self) -> str:
         base = self._spec.base_url.rstrip("/")
         kind = self._spec.kind
@@ -385,8 +425,16 @@ class LiveHttpAgent:
             return f"{base}/v1/chat/completions"
         if kind == ProviderKind.ANTHROPIC:
             return f"{base}/v1/messages"
-        if kind == ProviderKind.GEMINI:
+        if kind in (ProviderKind.GEMINI, ProviderKind.VERTEX_EXPRESS):
             model = quote(self._spec.model, safe="")
+            if self._is_vertex_express():
+                if base.endswith("/publishers/google"):
+                    return f"{base}/models/{model}:generateContent"
+                if base.endswith("/v1") or base.endswith("/v1beta1"):
+                    return f"{base}/publishers/google/models/{model}:generateContent"
+                return f"{base}/v1/publishers/google/models/{model}:generateContent"
+            if base.endswith("/v1beta") or base.endswith("/v1"):
+                return f"{base}/models/{model}:generateContent"
             return f"{base}/v1beta/models/{model}:generateContent"
         raise LiveProviderError(
             f"Unsupported provider kind {kind!r}.",
@@ -401,7 +449,7 @@ class LiveHttpAgent:
         if self._spec.kind == ProviderKind.ANTHROPIC:
             headers["x-api-key"] = key
             headers["anthropic-version"] = ANTHROPIC_VERSION
-        elif self._spec.kind == ProviderKind.GEMINI:
+        elif self._spec.kind in (ProviderKind.GEMINI, ProviderKind.VERTEX_EXPRESS):
             headers["x-goog-api-key"] = key
         else:
             headers["Authorization"] = f"Bearer {key}"
@@ -433,7 +481,7 @@ class LiveHttpAgent:
             if system_text:
                 payload["system"] = system_text
             return payload
-        if kind == ProviderKind.GEMINI:
+        if kind in (ProviderKind.GEMINI, ProviderKind.VERTEX_EXPRESS):
             system_text, contents = _gemini_contents(turns)
             payload = {
                 "contents": contents,
@@ -455,7 +503,7 @@ class LiveHttpAgent:
             return _parse_openai(body, self._spec.provider)
         if kind == ProviderKind.ANTHROPIC:
             return _parse_anthropic(body, self._spec.provider)
-        if kind == ProviderKind.GEMINI:
+        if kind in (ProviderKind.GEMINI, ProviderKind.VERTEX_EXPRESS):
             return _parse_gemini(body, self._spec.provider)
         raise LiveProviderError(
             f"Unsupported provider kind {kind!r}.",
@@ -981,6 +1029,17 @@ def _fallback_spec(provider: str) -> LiveAgentSpec:
             _env("ANTHROPIC_MODEL") or "claude-3-5-sonnet-latest",
             "ANTHROPIC_API_KEY",
             "anthropic-messages",
+            None,
+        )
+    if provider == "vertex_express":
+        key_env = next((name for name in VERTEX_KEY_ENVS if _env(name)), "VERTEX_API_KEY")
+        return LiveAgentSpec(
+            "vertex_express",
+            ProviderKind.VERTEX_EXPRESS,
+            _base_from_env("VERTEX_BASE_URL", VERTEX_EXPRESS_DEFAULT_BASE),
+            _env("VERTEX_MODEL") or "gemini-4-neon",
+            key_env,
+            "gemini-generate",
             None,
         )
     return LiveAgentSpec(

@@ -13,6 +13,7 @@ from indirect_input_classifier import (
     build_default_template_library,
 )
 from live_adapters import (
+    FREE_GEMINI_MODELS,
     PRIORITY_GEMINI_MODELS,
     EmbeddingAlignmentScorer,
     HybridSemanticJudge,
@@ -43,7 +44,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     provider_choices = list(
         dict.fromkeys(
-            ["ollama", "openai_compatible", "anthropic", "gemini", "simulated", *LIVE_PROVIDER_CHOICES]
+            [
+                "ollama",
+                "openai_compatible",
+                "anthropic",
+                "gemini",
+                "vertex_express",
+                "simulated",
+                *LIVE_PROVIDER_CHOICES,
+            ]
         )
     )
     parser.add_argument(
@@ -55,7 +64,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         default="",
-        help="Model ID (e.g., qwen2.5-coder:7b, llama3.1:latest, gpt-4o-mini, claude-3-5-sonnet-latest, gemini-2.5-flash).",
+        help="Model ID (e.g., qwen2.5-coder:7b, llama3.1:latest, gpt-4o-mini, claude-3-5-sonnet-latest, gemini-4-hydrogen, gemini-4-neon).",
     )
     parser.add_argument(
         "--models",
@@ -171,6 +180,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--gemini-priority",
         action="store_true",
         help="Benchmark Gemini 4 priority models sequentially (gemini-4-carbon, gemini-4-neon, gemini-4-argon).",
+    )
+    parser.add_argument(
+        "--gemini-free",
+        action="store_true",
+        help="Benchmark $0 Gemini Free Tier models sequentially (gemini-4-hydrogen, gemini-3.8-flash, gemini-3.6-flash).",
     )
     parser.add_argument(
         "--long-horizon",
@@ -303,6 +317,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "openai_compatible",
         "anthropic",
         "gemini",
+        "vertex_express",
         "simulated",
     }:
         return _run_benign_provider_cli(args)
@@ -340,10 +355,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.all_protocols
         else [ProtocolFormat(args.protocol) if args.protocol else None]
     )
-    if args.gemini_priority:
+    if args.gemini_priority or args.gemini_free:
         if args.provider == "ollama" and not args.model.strip():
             args.provider = "gemini"
-        models_to_run = list(PRIORITY_GEMINI_MODELS)
+        models_to_run = []
+        if args.gemini_priority:
+            models_to_run.extend(PRIORITY_GEMINI_MODELS)
+        if args.gemini_free:
+            models_to_run.extend(FREE_GEMINI_MODELS)
+        models_to_run = list(dict.fromkeys(models_to_run))
     else:
         models_to_run = list(args.models) if args.models else [args.model]
 

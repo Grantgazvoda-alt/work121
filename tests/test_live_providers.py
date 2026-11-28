@@ -120,7 +120,10 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
-        if self.path.startswith("/v1beta/models/") and self.path.endswith(":generateContent"):
+        if (
+            self.path.startswith("/v1beta/models/")
+            or self.path.startswith("/v1/publishers/google/models/")
+        ) and self.path.endswith(":generateContent"):
             self._send(
                 200,
                 {
@@ -531,3 +534,31 @@ def test_cli_writes_paired_jsonl(monkeypatch: pytest.MonkeyPatch, http_server, t
     printed = capsys.readouterr().out
     assert "sk-cli" not in printed
     assert '"provider": "openai"' in printed
+
+
+def test_vertex_express_provider_request_shape(monkeypatch: pytest.MonkeyPatch, http_server) -> None:
+    server, state = http_server
+    base = _base(server)
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("VERTEX_API_KEY", "vtx-secret-123")
+    monkeypatch.setenv("VERTEX_BASE_URL", base)
+
+    specs = {spec.provider: spec for spec in discover_live_agents(timeout=0.2)}
+    assert "vertex_express" in specs
+    assert specs["vertex_express"].kind == "vertex_express"
+
+    agent = LiveHttpAgent(resolve_spec("vertex_express", model="gemini-4-neon", base_url=base))
+    text, usage = agent.complete(
+        [
+            TurnRecord(0, "system", "Vertex system rule."),
+            TurnRecord(1, "user", "Ping"),
+        ]
+    )
+    req = state.requests[-1]
+    assert req["path"] == "/v1/publishers/google/models/gemini-4-neon:generateContent"
+    assert req["headers"]["x-goog-api-key"] == "vtx-secret-123"
+    assert req["body"]["systemInstruction"]["parts"][0]["text"] == "Vertex system rule."
+    assert "vtx-secret-123" not in repr(agent)
+    assert usage is not None
+    assert "cannot fulfill" in text.lower() or len(text) > 0
+

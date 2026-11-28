@@ -55,6 +55,8 @@ from indirect_input_classifier import (
     build_default_template_library,
 )
 from live_adapters import (
+    FREE_GEMINI_MODELS,
+    PRIORITY_GEMINI_MODELS,
     EmbeddingAlignmentScorer,
     HybridSemanticJudge,
     IndirectInvariantJudge,
@@ -746,7 +748,8 @@ def create_backend_app(
                     "registered_agents": len(agents),
                     "live_agents": live_count,
                 },
-                "priority_gemini_models": ["gemini-4-carbon", "gemini-4-neon", "gemini-4-argon"],
+                "priority_gemini_models": list(PRIORITY_GEMINI_MODELS),
+                "free_gemini_models": list(FREE_GEMINI_MODELS),
                 "long_horizon_template_ids": [
                     "long_horizon_crescendo_drift",
                     "long_horizon_many_shot_context",
@@ -824,6 +827,7 @@ def create_backend_app(
             temp = float(body.get("temperature", 0.0))
         except (KeyError, TypeError, ValueError) as exc:
             return _json_error(f"Invalid or missing provider/temperature: {exc}", 400)
+        thinking_level = str(body.get("thinking_level", "")).strip().lower() or None
         cfg = LiveProviderConfig(
             provider=provider,
             model_id=str(body.get("model_id", "")).strip(),
@@ -831,6 +835,7 @@ def create_backend_app(
             base_url=str(body.get("base_url", "")).strip(),
             api_key=str(body.get("api_key", "")).strip() or None,
             temperature=temp,
+            thinking_level=thinking_level,
         )
         ok, msg = await asyncio.to_thread(LiveHttpAgent(cfg).health_check)
         return JSONResponse({"ok": ok, "message": msg})
