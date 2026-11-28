@@ -145,7 +145,8 @@ export async function renderOverviewPage(root, appState) {
               <option value="ollama">ollama (Local Ollama)</option>
               <option value="openai_compatible">openai_compatible (OpenAI / vLLM / LiteLLM)</option>
               <option value="anthropic">anthropic (Claude Messages API)</option>
-              <option value="gemini">gemini (Google Gemini 4 / API)</option>
+              <option value="gemini">gemini (Google AI Studio / API)</option>
+              <option value="vertex_express">vertex_express (Vertex AI Express / GCP $300 Credits)</option>
             </select>
           </label>
           <label class="field">Model ID
@@ -162,11 +163,18 @@ export async function renderOverviewPage(root, appState) {
           </label>
         </div>
         <div class="btn-row mt-12">
-          <span class="card-sub">Gemini 4 Priority:</span>
+          <span class="card-sub">Gemini 4 Priority (Paid / Vertex Credits):</span>
           <button class="btn btn-ghost btn-sm gemini-preset-btn" type="button" data-gemini-model="gemini-4-carbon">Carbon</button>
           <button class="btn btn-ghost btn-sm gemini-preset-btn" type="button" data-gemini-model="gemini-4-neon">Neon</button>
           <button class="btn btn-ghost btn-sm gemini-preset-btn" type="button" data-gemini-model="gemini-4-argon">Argon</button>
-          <button class="btn btn-secondary btn-sm" id="btn-reg-gemini-trio" type="button" title="Register gemini-4-carbon, gemini-4-neon, and gemini-4-argon at once">Register All 3</button>
+          <button class="btn btn-secondary btn-sm" id="btn-reg-gemini-trio" type="button" title="Register gemini-4-carbon, gemini-4-neon, and gemini-4-argon at once">Register Priority 3</button>
+        </div>
+        <div class="btn-row mt-8">
+          <span class="card-sub">Gemini Free Tier ($0 AI Studio API):</span>
+          <button class="btn btn-ghost btn-sm gemini-free-btn" type="button" data-gemini-model="gemini-4-hydrogen">Hydrogen ($0)</button>
+          <button class="btn btn-ghost btn-sm gemini-free-btn" type="button" data-gemini-model="gemini-3.8-flash">3.8 Flash ($0)</button>
+          <button class="btn btn-ghost btn-sm gemini-free-btn" type="button" data-gemini-model="gemini-3.6-flash">3.6 Flash ($0)</button>
+          <button class="btn btn-secondary btn-sm" id="btn-reg-gemini-free-trio" type="button" title="Register free-tier gemini-4-hydrogen, gemini-3.8-flash, and gemini-3.6-flash at once">Register Free 3 ($0)</button>
         </div>
         <div class="grid grid-3 mt-12">
           <label class="field">Version Tag
@@ -507,10 +515,16 @@ export async function renderOverviewPage(root, appState) {
       hint: "Anthropic Messages API: automatically falls back to ANTHROPIC_API_KEY when API Key is blank.",
     },
     gemini: {
-      model: "e.g. gemini-4-neon, gemini-4-carbon, gemini-4-argon",
+      model: "e.g. gemini-4-hydrogen ($0 Free) or gemini-4-neon (Paid)",
       baseUrl: "https://generativelanguage.googleapis.com",
       apiKey: "AIza... or GEMINI_API_KEY env",
-      hint: "Google Gemini 4 (Carbon / Neon / Argon): uses GEMINI_API_KEY or GOOGLE_API_KEY env when API Key is blank.",
+      hint: "Gemini Developer API: gemini-4-hydrogen, gemini-3.8-flash, and gemini-3.6-flash are $0 Free Tier; Carbon/Neon/Argon require billing or Vertex Express.",
+    },
+    vertex_express: {
+      model: "e.g. gemini-4-neon, gemini-4-carbon, gemini-4-argon",
+      baseUrl: "https://aiplatform.googleapis.com",
+      apiKey: "AQ... / AIza... or VERTEX_API_KEY env",
+      hint: "Vertex AI Express Mode (GCP $300 trial credits): uses /v1/publishers/google/models/... and VERTEX_API_KEY / GOOGLE_VERTEX_API_KEY / GOOGLE_API_KEY env.",
     },
   };
 
@@ -562,32 +576,36 @@ export async function renderOverviewPage(root, appState) {
     return payload;
   }
 
-  document.getElementById("reg-provider").addEventListener("change", () => {
-    syncProviderPreset();
-    clearEndpointFeedback();
-  });
-  document.getElementById("reg-model-id").addEventListener("input", clearEndpointFeedback);
-  document.querySelectorAll(".gemini-preset-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      document.getElementById("reg-provider").value = "gemini";
-      syncProviderPreset();
-      document.getElementById("reg-model-id").value = btn.dataset.geminiModel || "gemini-4-neon";
-      document.getElementById("reg-version").value = "live-gemini4";
-      clearEndpointFeedback();
+  function activeGeminiProvider() {
+    const cur = document.getElementById("reg-provider").value;
+    return cur === "vertex_express" ? "vertex_express" : "gemini";
+  }
+
+  function bindGeminiPresetButtons(selector, defaultVersion) {
+    document.querySelectorAll(selector).forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const provider = activeGeminiProvider();
+        document.getElementById("reg-provider").value = provider;
+        syncProviderPreset();
+        document.getElementById("reg-model-id").value = btn.dataset.geminiModel || "gemini-4-hydrogen";
+        document.getElementById("reg-version").value =
+          provider === "vertex_express" ? `${defaultVersion}-vertex` : defaultVersion;
+        clearEndpointFeedback();
+      });
     });
-  });
-  document.getElementById("btn-reg-gemini-trio")?.addEventListener("click", async (ev) => {
-    const btn = ev.currentTarget;
+  }
+
+  async function registerGeminiPresetBatch(btn, models, defaultVersion, label) {
     btn.disabled = true;
     try {
+      const provider = activeGeminiProvider();
       const baseUrl = document.getElementById("reg-base-url").value.trim();
       const apiKey = document.getElementById("reg-api-key").value.trim() || null;
       const thinkingLevel = document.getElementById("reg-thinking-level")?.value || null;
-      const version = document.getElementById("reg-version").value.trim() || "live-gemini4";
-      const trio = overview.priority_gemini_models || ["gemini-4-carbon", "gemini-4-neon", "gemini-4-argon"];
-      for (const modelId of trio) {
+      const version = document.getElementById("reg-version").value.trim() || defaultVersion;
+      for (const modelId of models) {
         await apiPost("/api/agents/register", {
-          provider: "gemini",
+          provider,
           model_id: modelId,
           model_version: version,
           base_url: baseUrl,
@@ -595,7 +613,7 @@ export async function renderOverviewPage(root, appState) {
           thinking_level: thinkingLevel,
         });
       }
-      toast(`Registered priority Gemini 4 models: ${trio.join(", ")}`, "ok");
+      toast(`Registered ${label} (${provider}): ${models.join(", ")}`, "ok");
       const refreshed = await apiGet("/api/agents");
       currentAgents = refreshed.agents || [];
       renderAgentsTable();
@@ -605,6 +623,22 @@ export async function renderOverviewPage(root, appState) {
     } finally {
       btn.disabled = false;
     }
+  }
+
+  document.getElementById("reg-provider").addEventListener("change", () => {
+    syncProviderPreset();
+    clearEndpointFeedback();
+  });
+  document.getElementById("reg-model-id").addEventListener("input", clearEndpointFeedback);
+  bindGeminiPresetButtons(".gemini-preset-btn", "live-gemini4");
+  bindGeminiPresetButtons(".gemini-free-btn", "live-gemini-free");
+  document.getElementById("btn-reg-gemini-trio")?.addEventListener("click", async (ev) => {
+    const trio = overview.priority_gemini_models || ["gemini-4-carbon", "gemini-4-neon", "gemini-4-argon"];
+    await registerGeminiPresetBatch(ev.currentTarget, trio, "live-gemini4", "priority Gemini 4 models");
+  });
+  document.getElementById("btn-reg-gemini-free-trio")?.addEventListener("click", async (ev) => {
+    const trio = overview.free_gemini_models || ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.6-flash"];
+    await registerGeminiPresetBatch(ev.currentTarget, trio, "live-gemini-free", "free-tier Gemini models");
   });
   syncProviderPreset();
 

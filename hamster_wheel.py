@@ -17,6 +17,7 @@ from indirect_input_classifier import (
 )
 from live_adapters import (
     DEFAULT_BASE_URLS,
+    FREE_GEMINI_MODELS,
     PRIORITY_GEMINI_MODELS,
     EmbeddingAlignmentScorer,
     HybridSemanticJudge,
@@ -645,7 +646,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument(
         "--provider",
-        choices=["ollama", "openai_compatible", "anthropic", "gemini", "simulated"],
+        choices=["ollama", "openai_compatible", "anthropic", "gemini", "vertex_express", "simulated"],
         default="ollama",
     )
     parser.add_argument("--model", default="", help="Model ID or simulated agent key.")
@@ -670,6 +671,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--gemini-priority",
         action="store_true",
         help="Run sequentially across Gemini 4 priority models (gemini-4-carbon, gemini-4-neon, gemini-4-argon).",
+    )
+    parser.add_argument(
+        "--gemini-free",
+        action="store_true",
+        help="Run sequentially across $0 Gemini Free Tier models (gemini-4-hydrogen, gemini-3.8-flash, gemini-3.6-flash).",
+    )
+    parser.add_argument(
+        "--thinking-level",
+        choices=["low", "medium", "high", "xhigh"],
+        default=None,
+        help="Optional Gemini 4 thinkingConfig level (low, medium, high, xhigh).",
     )
     parser.add_argument(
         "--long-horizon",
@@ -730,6 +742,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 model_version=args.model_version,
                 base_url=args.base_url,
                 api_key=resolve_api_key(provider),
+                thinking_level=args.thinking_level,
             ),
             mcp_backend=mcp_live,
             clean_mcp_backend=mcp_clean,
@@ -792,15 +805,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("[wheel] Stopped watching.")
             return 0
 
-    if args.gemini_priority and args.provider in ("gemini", "ollama"):
+    if (args.gemini_priority or args.gemini_free) and args.provider in ("gemini", "vertex_express", "ollama"):
         if args.provider == "ollama" and not args.model.strip():
-            # Allow `work121-wheel --gemini-priority` without repeating `--provider gemini`.
-            target_models = list(PRIORITY_GEMINI_MODELS)
+            # Allow `work121-wheel --gemini-priority` / `--gemini-free` without repeating `--provider gemini`.
             args.provider = "gemini"
-        elif args.provider == "gemini":
-            target_models = list(PRIORITY_GEMINI_MODELS)
-        else:
-            target_models = [args.model.strip()]
+        selected_presets: list[str] = []
+        if args.gemini_priority:
+            selected_presets.extend(PRIORITY_GEMINI_MODELS)
+        if args.gemini_free:
+            selected_presets.extend(FREE_GEMINI_MODELS)
+        target_models = (
+            list(dict.fromkeys(selected_presets))
+            if args.provider in ("gemini", "vertex_express")
+            else [args.model.strip()]
+        )
     else:
         model_id = args.model.strip()
         if not model_id and args.provider == "ollama":
